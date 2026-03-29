@@ -12,7 +12,7 @@ bot = Bot(TOKEN)
 dp = Dispatcher()
 
 # Настройки
-OWNER_ID = 123456789 # Твой ID
+OWNER_ID = 5679520675 # Твой ID
 admins = {OWNER_ID: 4}
 warns = {}
 
