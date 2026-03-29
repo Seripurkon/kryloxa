@@ -11,7 +11,7 @@ mutes = {}  # user_id : mute_end_time
 bans = {}   # user_id : ban_end_time
 roulette_games = {}  # chat_id : {initiator_id, opponent_id, stake, lives, bullets, turn}
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 
 # --- Основные команды ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
