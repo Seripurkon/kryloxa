@@ -1,4 +1,4 @@
-[29.03.2026 15:35] Xlmn Protectionlokab: from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from dotenv import load_dotenv
 import os
@@ -16,7 +16,7 @@ dp = Dispatcher()
 # =======================
 # Настройки админки
 # =======================
-OWNER_ID = 5679520675  # Замените на свой Telegram ID
+OWNER_ID = 123456789  # Замените на свой Telegram ID
 admins = {OWNER_ID: 4}  # user_id -> ранг (1-4)
 
 # Словарь варнов: chat_id -> user_id -> количество варнов
@@ -49,7 +49,7 @@ async def handle_mute(message: types.Message, duration_minutes: int = 60):
         chat_id,
         user_id,
         permissions=types.ChatPermissions(can_send_messages=False),
-        until_date=None  # None = навсегда; можно поставить время через datetime
+        until_date=None
     )
 
     await message.reply(f"Данный пользователь {username} успешно замучен на {duration_minutes} минут.\nВыдано администратором")
@@ -94,7 +94,7 @@ async def handle_warn(message: types.Message):
 
     if current_warns >= 3:
         await message.reply(f"❌ Пользователь {username} получил 3 варна и замучен на 30 минут! 🔇")
-        warns[chat_id][user_id] = 0  # сброс варнов после “мут”
+        warns[chat_id][user_id] = 0
     else:
         await message.reply(f"⚠️ Пользователь {username} получил варн {current_warns}/3")
 
@@ -117,24 +117,23 @@ async def warn(message: types.Message):
 async def add_admin(message: types.Message):
     if not check_rank(message.from_user.id, 4):
         await message.reply("❌ Только владелец может выдавать админку")
-[29.03.2026 15:35] Xlmn Protectionlokab: return
+        return
     try:
         username = message.text.split()[1]
         rank = int(message.text.split()[2])
-        user_id = int(username.replace("@", ""))  # для теста через Reply можно потом переделать
+        user_id = int(username.replace("@", ""))
         admins[user_id] = rank
         await message.reply(f"✅ Пользователь {username} получил админку ранг {rank}")
     except:
         await message.reply("⚠️ Использование: /addadmin @username <ранг>")
-
-@dp.message(Command("removeadmin"))
+ @dp.message(Command("removeadmin"))
 async def remove_admin(message: types.Message):
     if not check_rank(message.from_user.id, 4):
         await message.reply("❌ Только владелец может удалять админов")
         return
     try:
         username = message.text.split()[1]
-        user_id = int(username.replace("@", ""))  # для теста через Reply
+        user_id = int(username.replace("@", ""))
         if user_id in admins:
             del admins[user_id]
             await message.reply(f"❌ Пользователь {username} больше не админ")
