@@ -8,15 +8,22 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 # Данные
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
 OWNER_ID = 5679520675 
+FRIEND_ID = 782585931  # Твой друг (Ранг 3)
 RANKS_FILE = "ranks.json"
 
 # Загрузка рангов из файла
 def load_ranks():
     if os.path.exists(RANKS_FILE):
-        with open(RANKS_FILE, "r") as f:
-            data = json.load(f)
-            return {int(k): v for k, v in data.items()}
-    return {OWNER_ID: 4}
+        try:
+            with open(RANKS_FILE, "r") as f:
+                data = json.load(f)
+                ranks = {int(k): v for k, v in data.items()}
+                # Гарантируем права владельца и друга
+                ranks[OWNER_ID] = 4
+                ranks[FRIEND_ID] = 3
+                return ranks
+        except: pass
+    return {OWNER_ID: 4, FRIEND_ID: 3}
 
 # Сохранение рангов в файл
 def save_ranks():
@@ -45,7 +52,29 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = msg.from_user.id
     target_rank = get_rank(target_id)
     cmd_parts = text.split()
-    
+
+    # --- ИНФА (Как в Ирисе) ---
+    if text == "инфа":
+        chat_member = await context.bot.get_chat_member(update.effective_chat.id, target_id)
+        status_text = f"👤 Пользователь: {msg.from_user.first_name}\n"
+        status_text += f"⭐ Ранг: {target_rank}\n"
+        
+        w_count = warns.get(target_id, 0)
+        status_text += f"⚠️ Варны: {w_count}/3\n"
+        
+        # Проверка мута
+        if chat_member.status in ['restricted'] and not chat_member.can_send_messages:
+            until = chat_member.until_date
+            if until:
+                status_text += f"🔇 Статус: В муте (до {until.strftime('%d.%m %H:%M')})"
+            else:
+                status_text += "🔇 Статус: В муте навсегда"
+        else:
+            status_text += "✅ Статус: Ограничений нет"
+            
+        await update.message.reply_text(status_text)
+        return
+
     # --- УПРАВЛЕНИЕ АДМИНКАМИ ---
     if text.startswith("дать админку") and caller_rank >= 3:
         try:
@@ -53,17 +82,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if new_rank >= caller_rank and caller_id != OWNER_ID:
                 return await update.message.reply_text("Нельзя дать ранг выше своего!")
             user_ranks[target_id] = min(3, new_rank)
-            save_ranks() # Сохраняем в файл
+            save_ranks()
             await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь ранг {user_ranks[target_id]}")
         except: pass
         return
 
     elif text == "снять админку" and caller_rank >= 3:
+        if target_id == OWNER_ID or target_id == FRIEND_ID:
+            return await update.message.reply_text("Этого администратора нельзя снять.")
         if target_rank >= caller_rank and caller_id != OWNER_ID:
             return await update.message.reply_text("Недостаточно прав.")
         if target_id in user_ranks: 
             del user_ranks[target_id]
-            save_ranks() # Сохраняем в файл
+            save_ranks()
         await update.message.reply_text(f"❌ {msg.from_user.first_name} больше не админ.")
         return
 
@@ -113,13 +144,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Подпишитесь на новостной канал бота и следите за его разработкой😊\n\n"
         f"👤 Твой ранг: {rank}\n\n"
         "Список команд (ответом на сообщение):\n"
-        "• Молчи [мин] / Скажи\n"
-        "• Бан [дн] / Разбан\n"
-        "• Варн / Снять варн\n"
+        "Инфа - узнать статус игрока\n"
+        "Молчи [мин] / Скажи\n"
+        "Бан [дн] / Разбан\n"
+        "Варн / Снять варн\n"
     )
     if rank >= 3:
-        text += "⭐ Дать админку [1-3] / Снять админку\n"
-    
+        text += "Дать админку [1-3] / Снять админку\n"
     text += "\n🎮 Напиши Рулетка для дуэли"
     await update.message.reply_text(text)
 
