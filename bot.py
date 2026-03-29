@@ -1,16 +1,29 @@
 import os
-import asyncio
+import json
 import random
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-# Твой токен и ID владельца
+# Данные
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
 OWNER_ID = 5679520675 
+RANKS_FILE = "ranks.json"
 
-# База данных в памяти
-user_ranks = {OWNER_ID: 4} 
+# Загрузка рангов из файла
+def load_ranks():
+    if os.path.exists(RANKS_FILE):
+        with open(RANKS_FILE, "r") as f:
+            data = json.load(f)
+            return {int(k): v for k, v in data.items()}
+    return {OWNER_ID: 4}
+
+# Сохранение рангов в файл
+def save_ranks():
+    with open(RANKS_FILE, "w") as f:
+        json.dump(user_ranks, f)
+
+user_ranks = load_ranks()
 warns = {}
 roulette_games = {}
 
@@ -33,13 +46,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_rank = get_rank(target_id)
     cmd_parts = text.split()
     
-    # --- УПРАВЛЕНИЕ АДМИНКАМИ (Ранг 3-4) ---
+    # --- УПРАВЛЕНИЕ АДМИНКАМИ ---
     if text.startswith("дать админку") and caller_rank >= 3:
         try:
             new_rank = int(cmd_parts[2]) if len(cmd_parts) > 2 and cmd_parts[2].isdigit() else 1
             if new_rank >= caller_rank and caller_id != OWNER_ID:
                 return await update.message.reply_text("Нельзя дать ранг выше своего!")
             user_ranks[target_id] = min(3, new_rank)
+            save_ranks() # Сохраняем в файл
             await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь ранг {user_ranks[target_id]}")
         except: pass
         return
@@ -47,62 +61,46 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "снять админку" and caller_rank >= 3:
         if target_rank >= caller_rank and caller_id != OWNER_ID:
             return await update.message.reply_text("Недостаточно прав.")
-        if target_id in user_ranks: del user_ranks[target_id]
+        if target_id in user_ranks: 
+            del user_ranks[target_id]
+            save_ranks() # Сохраняем в файл
         await update.message.reply_text(f"❌ {msg.from_user.first_name} больше не админ.")
         return
 
-    # --- НАКАЗАНИЯ (Ранг 1-4) ---
+    # --- НАКАЗАНИЯ ---
     if caller_rank < 1: return 
     if target_rank >= caller_rank and caller_id != OWNER_ID:
         return await update.message.reply_text("🛡️ Этот пользователь защищен рангом.")
 
-    # МОЛЧИ (Мут)
     if cmd_parts[0] == "молчи":
         mins = int(cmd_parts[1]) if len(cmd_parts) > 1 and cmd_parts[1].isdigit() else 60
-        mins = max(1, min(525600, mins))
-        until = datetime.now() + timedelta(minutes=mins)
-        try:
-            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, 
-                permissions={"can_send_messages": False}, until_date=until)
-            await update.message.reply_text(f"🔇 {msg.from_user.first_name} замолчал на {mins} мин.")
-        except: pass
+        until = datetime.now() + timedelta(minutes=max(1, min(525600, mins)))
+        await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages": False}, until_date=until)
+        await update.message.reply_text(f"🔇 {msg.from_user.first_name} замолчал на {mins} мин.")
 
-    # СКАЖИ (Размут)
     elif cmd_parts[0] == "скажи":
-        try:
-            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, 
-                permissions={"can_send_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True})
-            await update.message.reply_text(f"🔊 {msg.from_user.first_name} размучен.")
-        except: pass
+        await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True})
+        await update.message.reply_text(f"🔊 {msg.from_user.first_name} размучен.")
 
-    # БАН
     elif cmd_parts[0] == "бан":
         days = int(cmd_parts[1]) if len(cmd_parts) > 1 and cmd_parts[1].isdigit() else 1
         until = datetime.now() + timedelta(days=max(1, min(365, days)))
-        try:
-            await context.bot.ban_chat_member(update.effective_chat.id, target_id, until_date=until)
-            await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {days} дн.")
-        except: pass
+        await context.bot.ban_chat_member(update.effective_chat.id, target_id, until_date=until)
+        await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {days} дн.")
 
-    # РАЗБАН
     elif cmd_parts[0] == "разбан":
-        try:
-            await context.bot.unban_chat_member(update.effective_chat.id, target_id, only_if_banned=True)
-            await update.message.reply_text(f"✅ {msg.from_user.first_name} разбанен.")
-        except: pass
+        await context.bot.unban_chat_member(update.effective_chat.id, target_id, only_if_banned=True)
+        await update.message.reply_text(f"✅ {msg.from_user.first_name} разбанен.")
 
-    # ВАРН
     elif cmd_parts[0] == "варн":
         warns[target_id] = warns.get(target_id, 0) + 1
         if warns[target_id] >= 3:
             warns[target_id] = 0
-            until = datetime.now() + timedelta(minutes=30)
-            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages": False}, until_date=until)
+            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages": False}, until_date=datetime.now() + timedelta(minutes=30))
             await update.message.reply_text(f"⚠️ 3/3 варна! {msg.from_user.first_name} в муте на 30м.")
         else:
             await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[target_id]}/3")
 
-    # СНЯТЬ ВАРН
     elif text.startswith("снять варн"):
         warns[target_id] = max(0, warns.get(target_id, 0) - 1)
         await update.message.reply_text(f"✅ Варн снят. У {msg.from_user.first_name} теперь {warns[target_id]}/3")
