@@ -1,8 +1,8 @@
+import os
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from dotenv import load_dotenv
-import os
-import asyncio
 
 # =======================
 # Загрузка токена
@@ -16,11 +16,9 @@ dp = Dispatcher()
 # =======================
 # Настройки админки
 # =======================
-OWNER_ID = 5679520675  # Замените на свой Telegram ID
+OWNER_ID = 5679520675  
 admins = {OWNER_ID: 4}  # user_id -> ранг (1-4)
-
-# Словарь варнов: chat_id -> user_id -> количество варнов
-warns = {}
+warns = {} # chat_id -> user_id -> count
 
 # =======================
 # Проверка ранга
@@ -29,142 +27,110 @@ def check_rank(user_id, required_rank):
     return admins.get(user_id, 0) >= required_rank
 
 # =======================
-# Функции наказаний
-# =======================
-async def handle_mute(message: types.Message, duration_minutes: int = 60):
-    if not check_rank(message.from_user.id, 1):
-        await message.reply("❌ У вас нет прав")
-        return
-    if not message.reply_to_message:
-        await message.reply("⚠️ Ответьте на сообщение пользователя, чтобы использовать /mute")
-        return
-
-    user = message.reply_to_message.from_user
-    username = f"@{user.username}" if user.username else user.full_name
-
-    chat_id = message.chat.id
-    user_id = user.id
-
-    await bot.restrict_chat_member(
-        chat_id,
-        user_id,
-        permissions=types.ChatPermissions(can_send_messages=False),
-        until_date=None
-    )
-
-    await message.reply(f"Данный пользователь {username} успешно замучен на {duration_minutes} минут.\nВыдано администратором")
-
-async def handle_ban(message: types.Message):
-    if not check_rank(message.from_user.id, 1):
-        await message.reply("❌ У вас нет прав")
-        return
-    if not message.reply_to_message:
-        await message.reply("⚠️ Ответьте на сообщение пользователя, чтобы использовать /ban")
-        return
-
-    user = message.reply_to_message.from_user
-    username = f"@{user.username}" if user.username else user.full_name
-
-    chat_id = message.chat.id
-    user_id = user.id
-
-    await bot.ban_chat_member(chat_id, user_id)
-    await message.reply(f"Данный пользователь {username} успешно забанен.\nВыдано администратором")
-
-async def handle_warn(message: types.Message):
-    if not check_rank(message.from_user.id, 1):
-        await message.reply("❌ У вас нет прав")
-        return
-    if not message.reply_to_message:
-        await message.reply("⚠️ Ответьте на сообщение пользователя, чтобы использовать /warn")
-        return
-
-    chat_id = message.chat.id
-    user = message.reply_to_message.from_user
-    user_id = user.id
-    username = f"@{user.username}" if user.username else user.full_name
-
-    if chat_id not in warns:
-        warns[chat_id] = {}
-    if user_id not in warns[chat_id]:
-        warns[chat_id][user_id] = 0
-
-    warns[chat_id][user_id] += 1
-    current_warns = warns[chat_id][user_id]
-
-    if current_warns >= 3:
-        await message.reply(f"❌ Пользователь {username} получил 3 варна и замучен на 30 минут! 🔇")
-        warns[chat_id][user_id] = 0
-    else:
-        await message.reply(f"⚠️ Пользователь {username} получил варн {current_warns}/3")
-
-# =======================
-# Команды
+# Команды наказаний
 # =======================
 @dp.message(Command("mute"))
 async def mute(message: types.Message):
-    await handle_mute(message, duration_minutes=60)
+    if not check_rank(message.from_user.id, 1):
+        return await message.reply("❌ У вас нет прав")
+    
+    if not message.reply_to_message:
+        return await message.reply("⚠️ Ответьте на сообщение пользователя")
+
+    user = message.reply_to_message.from_user
+    await bot.restrict_chat_member(
+        message.chat.id,
+        user.id,
+        permissions=types.ChatPermissions(can_send_messages=False)
+    )
+    await message.reply(f"🔇 Пользователь {user.full_name} замучен.")
 
 @dp.message(Command("ban"))
 async def ban(message: types.Message):
-    await handle_ban(message)
+    if not check_rank(message.from_user.id, 2):
+        return await message.reply("❌ У вас нет прав (нужен ранг 2+)")
+    
+    if not message.reply_to_message:
+        return await message.reply("⚠️ Ответьте на сообщение пользователя")
+
+    user = message.reply_to_message.from_user
+    await bot.ban_chat_member(message.chat.id, user.id)
+    await message.reply(f"🔨 Пользователь {user.full_name} забанен.")
 
 @dp.message(Command("warn"))
 async def warn(message: types.Message):
-    await handle_warn(message)
+    if not check_rank(message.from_user.id, 1):
+        return await message.reply("❌ У вас нет прав")
+    
+    if not message.reply_to_message:
+        return await message.reply("⚠️ Ответьте на сообщение")
 
+    chat_id = message.chat.id
+    user_id = message.reply_to_message.from_user.id
+    
+    warns.setdefault(chat_id, {})
+    warns[chat_id][user_id] = warns[chat_id].get(user_id, 0) + 1
+    
+    count = warns[chat_id][user_id]
+    if count >= 3:
+        await bot.restrict_chat_member(chat_id, user_id, permissions=types.ChatPermissions(can_send_messages=False))
+        warns[chat_id][user_id] = 0
+        await message.reply(f"🚫 3/3 варна. Мут выдан.")
+    else:
+        await message.reply(f"⚠️ Варн выдан ({count}/3)")
+
+# =======================
+# Управление админами
+# =======================
 @dp.message(Command("addadmin"))
 async def add_admin(message: types.Message):
     if not check_rank(message.from_user.id, 4):
-        await message.reply("❌ Только владелец может выдавать админку")
-        return
+        return await message.reply("❌ Только владелец может это делать")
+    
     try:
-        username = message.text.split()[1]
-        rank = int(message.text.split()[2])
-        user_id = int(username.replace("@", ""))
-        admins[user_id] = rank
-        await message.reply(f"✅ Пользователь {username} получил админку ранг {rank}")
-    except:
-        await message.reply("⚠️ Использование: /addadmin @username <ранг>")
+        args = message.text.split()
+        new_admin_id = int(args[1])
+        rank = int(args[2])
+        admins[new_admin_id] = rank
+        await message.reply(f"✅ ID {new_admin_id} теперь админ {rank} ранга")
+    except (IndexError, ValueError):
+        await message.reply("Использование: `/addadmin ID ранг` (ID должен быть числом)")
+
 @dp.message(Command("removeadmin"))
 async def remove_admin(message: types.Message):
     if not check_rank(message.from_user.id, 4):
-        await message.reply("❌ Только владелец может удалять админов")
-        return
+        return await message.reply("❌ Только владелец может это делать")
+    
     try:
-        username = message.text.split()[1]
-        user_id = int(username.replace("@", ""))
-        if user_id in admins:
-            del admins[user_id]
-            await message.reply(f"❌ Пользователь {username} больше не админ")
+        target_id = int(message.text.split()[1])
+        if target_id in admins:
+            del admins[target_id]
+            await message.reply(f"❌ Админ {target_id} удален")
     except:
-        await message.reply("⚠️ Использование: /removeadmin @username")
+        await message.reply("Использование: `/removeadmin ID`")
 
+# =======================
+# Базовые команды
+# =======================
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer(
-        "Привет! Я админ-бот Kryloxa. 👋\n"
-        "Используй /help для списка команд.\n"
-        "Добавь меня в группу и дай права администратора для работы наказаний."
-    )
+    await message.answer("Бот запущен. Команды: /help")
 
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     await message.answer(
-        "/start - приветствие\n"
-        "/help - список команд\n"
-        "/mute - замутить пользователя (через Reply)\n"
-        "/ban - забанить (через Reply)\n"
-        "/warn - выдать варн (через Reply, 3 варна = 30 мин мут)\n"
-        "/addadmin @username <ранг> - выдать админку (только владелец)\n"
-        "/removeadmin @username - убрать админку (только владелец)"
+        "🛡 Команды:\n"
+        "/mute, /ban, /warn — через Reply\n"
+        "/addadmin ID Rank — добавить админа\n"
+        "/removeadmin ID — убрать админа"
     )
 
 # =======================
-# Запуск бота
+# Запуск
 # =======================
 async def main():
-    print("Админ-бот Kryloxa запущен 🚀")
+    print("Бот запущен...")
     await dp.start_polling(bot)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
