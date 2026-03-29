@@ -1,129 +1,111 @@
-import os
 import random
-from datetime import datetime, timedelta
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
-from dotenv import load_dotenv
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-load_dotenv()
-TOKEN = os.getenv("TOKEN")  # В .env: TOKEN=твой_токен
+# Ваш токен
+TOKEN = "ВАШ_ТОКЕН_ЗДЕСЬ"
 
-OWNER_ID = 5679520675
-admins = {OWNER_ID}
-warns = {}
-punishments = {}
-roulette_games = {}  # chat_id -> game info
+# Администраторы и привилегии
+admins = {5679520675: 4}  # Ваш ID с максимальной привилегией
+warnings = {}  # словарь: chat_id -> {user_id: [timestamp1, timestamp2,...]}
 
-# -------------------- Команды админа --------------------
+# Русская рулетка
+roulette_games = {}  # chat_id -> {"player1": user, "player2": user, "punishment_type": str, "bullet_chamber": [], "confirmed": False, "lives": {}}
+
+# ------------------ Команды ------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я бот для администрирования.\nИспользуй команды:\n- Мут\n- Варн\n- Бан\n- Снять мут\n- Снять варн\n- Разбан\n- Рулетка (ответом на сообщение)"
+        "Привет! Я бот для администрирования.\n"
+        "Используй команды: мут, варн, бан, снять мут, снять варн, разбан.\n"
+        "В группе доступна команда /start."
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Команды:\n- Мут [ник/ответ] [минуты]\n- Варн [ник/ответ] [минуты]\n- Бан [ник/ответ] [минуты]\n"
-        "- Снять мут [ник/ответ]\n- Снять варн [ник/ответ]\n- Разбан [ник/ответ]\n- Рулетка (ответом на сообщение)"
-    )
-
-def parse_time(arg: str) -> int:
-    units = {"минут": 1, "час": 60, "день": 1440, "месяц": 43200, "год": 525600}
-    try:
-        parts = arg.lower().split()
-        if len(parts) == 2:
-            num = int(parts[0])
-            unit = parts[1]
-            return num * units.get(unit, 1)
-        return int(arg)
-    except:
-        return 60
-
+# ---- Административные команды ----
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    args = context.args
-    if len(args) < 1 and not msg.reply_to_message:
-        await msg.reply_text("Укажи ник или ответь на сообщение.")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Команда должна быть ответом на сообщение пользователя.")
         return
-    target = msg.reply_to_message.from_user if msg.reply_to_message else None
-    duration = parse_time(args[1]) if len(args) > 1 else 60
-    if target:
-        punishments[target.id] = ("mute", datetime.now() + timedelta(minutes=duration))
-        await msg.reply_text(f"{target.full_name} замучен на {duration} минут.")
+    user = update.message.reply_to_message.from_user
+    chat_id = update.message.chat.id
+    await update.message.reply_text(f"{user.full_name} замучен на 1 день.")
+    
+async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Команда должна быть ответом на сообщение пользователя.")
+        return
+    user = update.message.reply_to_message.from_user
+    await update.message.reply_text(f"{user.full_name} снят мут.")
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    args = context.args
-    target = msg.reply_to_message.from_user if msg.reply_to_message else None
-    if not target:
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Команда должна быть ответом на сообщение пользователя.")
         return
-    warns[target.id] = warns.get(target.id, 0) + 1
-    if warns[target.id] >= 3:
-        punishments[target.id] = ("mute", datetime.now() + timedelta(minutes=30))
-        warns[target.id] = 0
-        await msg.reply_text(f"{target.full_name} получил 3/3 варнов и замучен на 30 минут.")
+    user = update.message.reply_to_message.from_user
+    chat_id = update.message.chat.id
+    warnings.setdefault(chat_id, {}).setdefault(user.id, [])
+    warnings[chat_id][user.id].append(1)
+    count = len(warnings[chat_id][user.id])
+    if count >= 3:
+        await update.message.reply_text(f"{user.full_name} получил 3/3 варна и замучен на 30 минут.")
+        warnings[chat_id][user.id] = []
     else:
-        await msg.reply_text(f"{target.full_name} получает предупреждение {warns[target.id]}/3.")
-
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    target = msg.reply_to_message.from_user if msg.reply_to_message else None
-    if not target:
-        return
-    duration = parse_time(context.args[1]) if len(context.args) > 1 else 1440
-    punishments[target.id] = ("ban", datetime.now() + timedelta(minutes=duration))
-    await msg.reply_text(f"{target.full_name} заблокирован на {duration} минут.")
-
-async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    target = msg.reply_to_message.from_user if msg.reply_to_message else None
-    if target and punishments.get(target.id, (None,))[0] == "mute":
-        punishments.pop(target.id)
-        await msg.reply_text(f"{target.full_name} больше не замучен.")
+        await update.message.reply_text(f"{user.full_name} получает предупреждение {count}/3.")
 
 async def unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    target = msg.reply_to_message.from_user if msg.reply_to_message else None
-    if target and target.id in warns:
-        warns[target.id] = 0
-        await msg.reply_text(f"{target.full_name} варны сброшены.")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Команда должна быть ответом на сообщение пользователя.")
+        return
+    user = update.message.reply_to_message.from_user
+    chat_id = update.message.chat.id
+    if chat_id in warnings and user.id in warnings[chat_id]:
+        warnings[chat_id][user.id] = []
+    await update.message.reply_text(f"{user.full_name} снят варн.")
+
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Команда должна быть ответом на сообщение пользователя.")
+        return
+    user = update.message.reply_to_message.from_user
+    await update.message.reply_text(f"{user.full_name} заблокирован в этом чате на 1 день.")
 
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    target = msg.reply_to_message.from_user if msg.reply_to_message else None
-    if target and punishments.get(target.id, (None,))[0] == "ban":
-        punishments.pop(target.id)
-        await msg.reply_text(f"{target.full_name} разбанен.")
-
-# -------------------- РУССКАЯ РУЛЕТКА --------------------
-async def roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg.reply_to_message:
-        await msg.reply_text("Ответь на сообщение того, с кем хочешь сыграть в рулетку.")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Команда должна быть ответом на сообщение пользователя.")
         return
-    opponent = msg.reply_to_message.from_user
-    player = msg.from_user
-    roulette_games[msg.chat.id] = {
-        "player1": player,
-        "player2": opponent,
-        "lives": {player.id: 2, opponent.id: 2},
-        "turn": player.id,
-        "bullet_chamber": random.sample([True, False, False, False, False, False], 6),
+    user = update.message.reply_to_message.from_user
+    await update.message.reply_text(f"{user.full_name} разбанен.")
+
+# ------------------ Русская рулетка ------------------
+async def roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Вы должны ответить на сообщение того, с кем хотите сыграть в рулетку и написать 'Рулетка'.")
+        return
+    if update.message.text.lower() != "рулетка":
+        return
+
+    player1 = update.message.from_user
+    player2 = update.message.reply_to_message.from_user
+    chat_id = update.message.chat.id
+    bullets = [True, True, False, False, False, False]  # 2 с порохом, 4 холостые
+    random.shuffle(bullets)
+
+    roulette_games[chat_id] = {
+        "player1": player1,
+        "player2": player2,
         "punishment_type": None,
-        "confirmed": False
+        "bullet_chamber": bullets,
+        "confirmed": False,
+        "lives": {player1.id: 2, player2.id: 2}
     }
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Варн", callback_data="roulette_choice_warn"),
          InlineKeyboardButton("Мут", callback_data="roulette_choice_mute"),
          InlineKeyboardButton("Бан", callback_data="roulette_choice_ban")]
     ])
-    await msg.reply_text(f"{player.full_name} предложил рулетку {opponent.full_name}. Выберите на что играть:", reply_markup=keyboard)
+    await update.message.reply_text(f"{player1.full_name} предложил игру {player2.full_name}.\nВыберите, на что играть:", reply_markup=keyboard)
 
 async def roulette_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -134,97 +116,56 @@ async def roulette_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not game:
         await query.message.edit_text("Игра не найдена.")
         return
+
+    # Выбор ставки первым игроком
     if data.startswith("roulette_choice_"):
         choice = data.split("_")[-1]
+        if query.from_user.id != game["player1"].id:
+            await query.message.answer("Только тот, кто предложил игру, может выбирать ставку.")
+            return
         game["punishment_type"] = choice
-        # Подтверждение второго игрока
-        opp_id = game["player2"].id
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Принять", callback_data="roulette_accept"),
              InlineKeyboardButton("Отклонить", callback_data="roulette_decline")]
         ])
-        await query.message.edit_text(f"{game['player1'].full_name} выбрал: {choice.upper()}. {game['player2'].full_name}, подтвердите участие.", reply_markup=keyboard)
+        await query.message.edit_text(f"{game['player1'].full_name} выбрал: {choice.upper()}. "
+                                      f"{game['player2'].full_name}, подтвердите участие.", reply_markup=keyboard)
+
+    # Подтверждение второго игрока
     elif data == "roulette_accept":
-        game["confirmed"] = True
-        await query.message.edit_text("Игра подтверждена! Начинаем первый ход.")
-        await play_turn(chat_id, context)
-    elif data == "roulette_decline":
-        roulette_games.pop(chat_id)
-        await query.message.edit_text("Игра отменена.")
-
-async def play_turn(chat_id, context: ContextTypes.DEFAULT_TYPE):
-    game = roulette_games.get(chat_id)
-    if not game:
-        return
-    current_id = game["turn"]
-    current_name = context.bot.get_chat(chat_id).get_member(current_id).user.full_name
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Выстрелить в себя", callback_data="shoot_self"),
-         InlineKeyboardButton("Выстрелить в соперника", callback_data="shoot_opp")]
-    ])
-    await context.bot.send_message(chat_id, f"Ход {current_name}: выберите действие.", reply_markup=keyboard)
-
-async def roulette_shoot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat.id
-    game = roulette_games.get(chat_id)
-    if not game or not game.get("confirmed"):
-        await query.message.edit_text("Игра не активна.")
-        return
-    shooter_id = game["turn"]
-    opponent_id = game["player2"].id if shooter_id == game["player1"].id else game["player1"].id
-    shoot_self = query.data == "shoot_self"
-    # Рандомный патрон
-    bullet = game["bullet_chamber"].pop(0)
-    if bullet:
-        if shoot_self:
-            game["lives"][shooter_id] -= 1
-            await query.message.reply_text(f"{context.bot.get_chat(chat_id).get_member(shooter_id).user.full_name} выстрелил в себя и потерял жизнь!")
-        else:
-            game["lives"][opponent_id] -= 1
-            await query.message.reply_text(f"{context.bot.get_chat(chat_id).get_member(shooter_id).user.full_name} выстрелил в соперника! Соперник теряет жизнь.")
-    else:
-        await query.message.reply_text("Холостой патрон, никто не пострадал.")
-
-    # Проверка проигравшего
-    for uid, lives in game["lives"].items():
-        if lives <= 0:
-            loser = uid
-            loser_name = context.bot.get_chat(chat_id).get_member(uid).user.full_name
-            punishment = game["punishment_type"]
-            if punishment == "mute":
-                punishments[loser] = ("mute", datetime.now() + timedelta(minutes=1440))
-            elif punishment == "warn":
-                warns[loser] = warns.get(loser, 0) + 1
-            elif punishment == "ban":
-                punishments[loser] = ("ban", datetime.now() + timedelta(minutes=1440))
-            await query.message.reply_text(f"{loser_name} проиграл. Применено наказание: {punishment.upper()}")
-            roulette_games.pop(chat_id)
+        if query.from_user.id != game["player2"].id:
+            await query.message.answer("Только приглашенный игрок может подтвердить участие.")
             return
+        game["confirmed"] = True
 
-    # Следующий ход
-    game["turn"] = opponent_id if shooter_id == game["player1"].id else game["player1"].id
-    if game["bullet_chamber"]:
-        await play_turn(chat_id, context)
-    else:
-        await query.message.reply_text("Все патроны использованы, игра окончена.")
+        # Ознакомительное сообщение
+        bullets = game["bullet_chamber"]
+        total = len(bullets)
+        live_bullets = sum(1 for b in bullets if b)
+        empty_bullets = total - live_bullets
+        await query.message.edit_text(
+            f"Игра подтверждена! Начинаем.\n"
+            f"Всего патронов: {total}\n"
+            f"Холостые: {empty_bullets}, с порохом: {live_bullets}\n"
+            f"У каждого игрока 2 жизни.\n"
+            f"Используйте кнопки 'Выстрелить в себя' или 'Выстрелить в соперника'.\n"
+            f"Если вы потеряете все жизни, применится выбранное наказание: {game['punishment_type'].upper()}."
+        )
+
+    elif data == "roulette_decline":
+        if query.from_user.id != game["player2"].id:
+            await query.message.answer("Только приглашенный игрок может отклонить игру.")
+            return
         roulette_games.pop(chat_id)
+        await query.message.edit_text("Игра отклонена.")
 
-# -------------------- Основной запуск --------------------
+# ------------------ Основное ------------------
 app = ApplicationBuilder().token(TOKEN).build()
 
+# Команды
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CommandHandler("mute", mute))
-app.add_handler(CommandHandler("warn", warn))
-app.add_handler(CommandHandler("ban", ban))
-app.add_handler(CommandHandler("unmute", unmute))
-app.add_handler(CommandHandler("unwarn", unwarn))
-app.add_handler(CommandHandler("unban", unban))
+app.add_handler(MessageHandler(filters.Regex(r"^(мут|варн|бан|снять мут|снять варн|разбан)$"), lambda u, c: None))  # тут нужно привязать функции по тексту
 app.add_handler(MessageHandler(filters.Regex(r"Рулетка"), roulette))
-app.add_handler(CallbackQueryHandler(roulette_button, pattern="^roulette_"))
-app.add_handler(CallbackQueryHandler(roulette_shoot, pattern="^shoot_"))
+app.add_handler(CallbackQueryHandler(roulette_button))
 
-print("Бот запущен!")
 app.run_polling()
