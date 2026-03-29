@@ -5,12 +5,18 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 
+# =======================
+# Загрузка токена
+# =======================
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
 
+# =======================
+# Настройки
+# =======================
 OWNER_ID = 5679520675
 admins = {OWNER_ID: 4}
 warns = {}
@@ -66,6 +72,9 @@ async def help_cmd(message: types.Message):
         "мут 1 минута\n"
         "бан 1 день\n"
         "варн 1 минута\n\n"
+        "снять мут\n"
+        "снять бан / разбан\n"
+        "снять варн\n\n"
         "Используй ответом на сообщение!"
     )
 
@@ -87,7 +96,6 @@ async def text_commands(message: types.Message):
             return
 
         target = message.reply_to_message.from_user
-
         minutes = parse_time(parts[1:]) or 60
 
         until_date = datetime.utcnow() + timedelta(minutes=minutes)
@@ -99,9 +107,7 @@ async def text_commands(message: types.Message):
             until_date=until_date
         )
 
-        await message.reply(
-            f"🔇 {target.full_name} замучен на {minutes} минут."
-        )
+        await message.reply(f"🔇 {target.full_name} замучен на {minutes} минут.")
 
     # ===== БАН =====
     elif parts[0] == "бан":
@@ -113,16 +119,13 @@ async def text_commands(message: types.Message):
             return
 
         target = message.reply_to_message.from_user
-
         minutes = parse_time(parts[1:])
 
         until_date = datetime.utcnow() + timedelta(minutes=minutes) if minutes else None
 
         await bot.ban_chat_member(message.chat.id, target.id, until_date=until_date)
 
-        await message.reply(
-            f"🚫 {target.full_name} заблокирован."
-        )
+        await message.reply(f"🚫 {target.full_name} заблокирован.")
 
     # ===== ВАРН =====
     elif parts[0] == "варн":
@@ -134,7 +137,6 @@ async def text_commands(message: types.Message):
             return
 
         target = message.reply_to_message.from_user
-
         minutes = parse_time(parts[1:]) or 1
 
         chat_warns = warns.setdefault(message.chat.id, {})
@@ -165,6 +167,64 @@ async def text_commands(message: types.Message):
             await message.reply(
                 f"⚠️ {target.full_name} получает предупреждение {len(user_warns)}/3."
             )
+
+    # ===== СНЯТЬ МУТ =====
+    elif text.startswith("снять мут"):
+        if not is_admin(message.from_user.id):
+            return
+
+        if not message.reply_to_message:
+            await message.reply("⚠️ Ответь на сообщение.")
+            return
+
+        target = message.reply_to_message.from_user
+
+        await bot.restrict_chat_member(
+            message.chat.id,
+            target.id,
+            permissions=types.ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True
+            )
+        )
+
+        await message.reply(f"✅ {target.full_name} размучен.")
+
+    # ===== СНЯТЬ БАН / РАЗБАН =====
+    elif text.startswith("снять бан") or text.startswith("разбан"):
+        if not is_admin(message.from_user.id):
+            return
+
+        if not message.reply_to_message:
+            await message.reply("⚠️ Ответь на сообщение.")
+            return
+
+        target = message.reply_to_message.from_user
+
+        await bot.unban_chat_member(message.chat.id, target.id)
+
+        await message.reply(f"✅ {target.full_name} разбанен.")
+
+    # ===== СНЯТЬ ВАРН =====
+    elif text.startswith("снять варн"):
+        if not is_admin(message.from_user.id):
+            return
+
+        if not message.reply_to_message:
+            await message.reply("⚠️ Ответь на сообщение.")
+            return
+
+        target = message.reply_to_message.from_user
+
+        chat_warns = warns.setdefault(message.chat.id, {})
+
+        if target.id in chat_warns:
+            chat_warns[target.id] = []
+            await message.reply(f"✅ Варны пользователя {target.full_name} сброшены.")
+        else:
+            await message.reply("⚠️ У пользователя нет варнов.")
 
 # =======================
 # ЗАПУСК
