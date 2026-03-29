@@ -8,8 +8,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 # === ВСТАВЬ СВОЙ ТОКЕН НИЖЕ В КАВЫЧКАХ ===
 TOKEN = "ЗДЕСЬ_ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
 
-# Список ID админов (замени на свой ID, чтобы команды работали)
-admins = {123456789} 
+# Список ID админов (ЗАМЕНИ 123456789 НА СВОЙ ID)
+admins = {5679520675} 
 
 warns = {}
 roulette_games = {}
@@ -21,10 +21,10 @@ def is_admin(user_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Бот запущен!\n"
+        "✅ Бот готов к работе!\n"
         "Команды (ответом на сообщение):\n"
         "/mute [мин], /warn, /ban\n"
-        "Для игры напиши 'Рулетка' (ответом на сообщение)."
+        "Для игры ответь пользователю словом 'Рулетка'."
     )
 
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -39,7 +39,7 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.restrict_chat_member(update.effective_chat.id, msg.from_user.id, permissions={"can_send_messages": False}, until_date=until)
         await update.message.reply_text(f"🔇 {msg.from_user.first_name} замучен на {duration} мин.")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка (проверь права бота): {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
@@ -71,12 +71,10 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
-    if not msg:
-        return await update.message.reply_text("Ответь на сообщение того, кого зовешь на дуэль!")
+    if not msg: return
     
     p1, p2 = update.effective_user, msg.from_user
-    if p1.id == p2.id:
-        return await update.message.reply_text("Самострел запрещен!")
+    if p1.id == p2.id: return await update.message.reply_text("Нельзя играть с самим собой.")
 
     roulette_games[p2.id] = {
         "p1": p1.id, "p1_name": p1.first_name,
@@ -97,12 +95,11 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     if user_id not in roulette_games:
-        return await query.answer("Это не твоя игра!", show_alert=True)
+        return await query.answer("Это не твой вызов!", show_alert=True)
 
     game = roulette_games[user_id]
     punishment = "варн" if query.data == "r_warn" else "мут"
     
-    # Случайный выбор проигравшего
     fate = random.choice([True, False]) 
     loser_id = game['p2'] if fate else game['p1']
     loser_name = game['p2_name'] if fate else game['p1_name']
@@ -116,25 +113,22 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             warns[loser_id] = warns.get(loser_id, 0) + 1
     except:
-        await query.message.reply_text("⚠️ Не удалось наказать (бот не админ или цель — админ)")
+        await query.message.reply_text("⚠️ Не удалось применить наказание (бот не админ или цель — админ)")
 
     del roulette_games[user_id]
 
 # ===================== Запуск =====================
 
 if __name__ == "__main__":
-    if "ЗДЕСЬ" in TOKEN:
-        print("❌ ОШИБКА: Ты забыл вставить токен в переменную TOKEN!")
-        exit(1)
-
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("warn", warn))
     app.add_handler(CommandHandler("ban", ban))
-    app.add_handler(MessageHandler(filters.REPLY & filters.Regex(r"^(?i)Рулетка$"), roulette_command))
+    # ИСПРАВЛЕННЫЙ ФЛАГ ТУТ:
+    app.add_handler(MessageHandler(filters.REPLY & filters.Regex(r"(?i)^Рулетка$"), roulette_command))
     app.add_handler(CallbackQueryHandler(roulette_callback, pattern="^r_"))
 
-    print("🚀 Бот запущен прямо из кода!")
+    print("🚀 Бот запущен!")
     app.run_polling()
