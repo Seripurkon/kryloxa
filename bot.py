@@ -42,18 +42,30 @@ TIME_UNITS = {
     "год": 525600
 }
 
-def parse_time(time_str):
+def parse_time(text_parts):
     try:
-        parts = time_str.split()
-        if len(parts) == 1:
-            # число без слова, считаем минуты
-            return int(parts[0])
-        elif len(parts) == 2:
-            num = int(parts[0])
-            unit = parts[1].lower()
-            return num * TIME_UNITS.get(unit, 1)
+        if len(text_parts) == 1:
+            return int(text_parts[0])
+
+        num = int(text_parts[0])
+        unit = text_parts[1].lower()
+
+        if "мин" in unit:
+            return num
+        elif "час" in unit:
+            return num * 60
+        elif "день" in unit:
+            return num * 1440
+        elif "недел" in unit:
+            return num * 10080
+        elif "месяц" in unit:
+            return num * 43200
+        elif "год" in unit:
+            return num * 525600
+
     except:
         return None
+
     return None
 
 # =======================
