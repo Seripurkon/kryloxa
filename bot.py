@@ -1,64 +1,79 @@
-import asyncio
-import os
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
-import datetime
 from dotenv import load_dotenv
+import os
 
-# Загружаем токен из .env
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
-bot = Bot(token=TOKEN)
+bot = Bot(TOKEN)
 dp = Dispatcher()
 
-users = {}
-daily_claim = {}
+# Владелец бота
+OWNER_ID = 5679520675
 
-# Клавиатура
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="💰 Баланс")],
-        [KeyboardButton(text="🗓 Ежедневная награда"), KeyboardButton(text="💼 Работа")],
-    ],
-    resize_keyboard=True
-)
+# Словарь админов: user_id -> ранг (1-4)
+admins = {OWNER_ID: 4}
 
+# Проверка прав
+def check_rank(user_id, required_rank):
+    return admins.get(user_id, 0) >= required_rank
+
+# Функция наказаний
+async def handle_punish(message: types.Message, action: str):
+    if not check_rank(message.from_user.id, 1):
+        await message.reply("❌ У вас нет прав")
+        return
+    if not message.reply_to_message:
+        await message.reply(f"⚠️ Ответьте на сообщение пользователя, чтобы использовать /{action}")
+        return
+    user = message.reply_to_message.from_user
+    username = f"@{user.username}" if user.username else user.full_name
+    await message.reply(f"Данный пользователь {username} успешно {action}.\nВыдано администратором")
+
+@dp.message(Command("mute"))
+async def mute(message: types.Message):
+    await handle_punish(message, "замучен")
+
+@dp.message(Command("ban"))
+async def ban(message: types.Message):
+    await handle_punish(message, "забанен")
+
+@dp.message(Command("warn"))
+async def warn(message: types.Message):
+    await handle_punish(message, "предупреждён")
+
+# Выдача админки
+@dp.message(Command("addadmin"))
+async def add_admin(message: types.Message):
+    if not check_rank(message.from_user.id, 4):
+        await message.reply("❌ Только владелец может выдавать админку")
+        return
+    try:
+        username = message.text.split()[1]
+        rank = int(message.text.split()[2])
+        user_id = int(username.replace("@", ""))  # для теста можно потом через Reply
+        admins[user_id] = rank
+        await message.reply(f"✅ Пользователь {username} получил админку ранг {rank}")
+    except:
+        await message.reply("⚠️ Использование: /addadmin @username <ранг>")
+
+# Старт
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    if message.from_user.id not in users:
-        users[message.from_user.id] = 100
+    await message.answer("Привет! Я админ-бот. Используй /help для списка команд.")
+
+# Помощь
+@dp.message(Command("help"))
+async def help_cmd(message: types.Message):
     await message.answer(
-        "👋 Добро пожаловать в Kryloxa!\nТебе выдано 100 монет!",
-        reply_markup=keyboard
+        "/start - приветствие\n/help - список команд\n/mute - замутить\n/ban - забанить\n/warn - выдать варн\n"
+        "/addadmin @username <ранг> - выдать админку (только владелец)"
     )
 
-@dp.message()
-async def buttons(message: types.Message):
-    user_id = message.from_user.id
-
-    if message.text == "💰 Баланс":
-        money = users.get(user_id, 0)
-        await message.answer(f"💰 У тебя: {money} монет")
-    elif message.text == "🗓 Ежедневная награда":
-        today = datetime.date.today()
-        last_claim = daily_claim.get(user_id)
-
-        if last_claim == today:
-            await message.answer("⏳ Ты уже забрал награду сегодня!")
-        else:
-            users[user_id] = users.get(user_id, 0) + 50
-            daily_claim[user_id] = today
-            await message.answer("🎉 Ты забрал ежедневную награду — 50 монет!")
-    elif message.text == "💼 Работа":
-        users[user_id] = users.get(user_id, 0) + 30
-        await message.answer("💼 Ты поработал и заработал 30 монет!")
-    else:
-        await message.answer("❌ Неизвестная команда")
-
+import asyncio
 async def main():
-    print("Бот Kryloxa запущен 🚀")
+    print("Админ-бот Kryloxa запущен 🚀")
     await dp.start_polling(bot)
 
 asyncio.run(main())
