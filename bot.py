@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
 # === ВСТАВЬ СВОЙ ТОКЕН НИЖЕ В КАВЫЧКАХ ===
-TOKEN = "ЗДЕСЬ_ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
 
 # Список ID админов (ЗАМЕНИ 123456789 НА СВОЙ ID)
 admins = {5679520675} 
