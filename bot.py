@@ -5,25 +5,21 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-# Берем токен СТРОГО из переменной BOT_TOKEN
+# Получаем токен из переменной окружения BotHost
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Если токена нет, бот сразу упадет с понятной ошибкой в консоли
-if not TOKEN:
-    raise ValueError("❌ ОШИБКА: Переменная BOT_TOKEN не найдена в настройках BotHost!")
-
-# Хранилище наказаний и админов
+# Хранилище (сбросится при перезагрузке)
 admins = set()
 punishments = {}
 warns = {}
 roulette_games = {}
 
-# ===================== Команды Админки =====================
+# ===================== Админка =====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я бот для администрирования.\n"
-        "Используй команды:\n- Мут\n- Варн\n- Бан\n- Снять мут\n- Снять варн\n- Разбан"
+        "Бот запущен! Команды: Мут, Варн, Бан, Разбан.\n"
+        "Чтобы команды работали, добавь свой ID в код или стань админом чата."
     )
 
 def is_admin(user_id):
@@ -39,7 +35,7 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: duration = int(context.args[0])
         except: pass
     punishments[user.id] = ("mute", datetime.now() + timedelta(minutes=duration))
-    await update.message.reply_text(f"{user.username} замучен на {duration} минут")
+    await update.message.reply_text(f"🤐 {user.username} в муте на {duration} мин.")
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
@@ -50,93 +46,62 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if warns[user.id] >= 3:
         punishments[user.id] = ("mute", datetime.now() + timedelta(minutes=30))
         warns[user.id] = 0
-        await update.message.reply_text(f"{user.username} получил 3 варна и замучен на 30 минут")
+        await update.message.reply_text(f"🛑 {user.username} получил 3 варна -> Мут 30 мин.")
     else:
-        await update.message.reply_text(f"{user.username} получает предупреждение {warns[user.id]}/3")
+        await update.message.reply_text(f"⚠️ Варн {user.username}: {warns[user.id]}/3")
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     msg = update.message.reply_to_message
     if not msg: return
-    user = msg.from_user
-    punishments[user.id] = ("ban", datetime.now() + timedelta(days=1))
-    await update.message.reply_text(f"{user.username} заблокирован на один день")
+    punishments[msg.from_user.id] = ("ban", datetime.now() + timedelta(days=1))
+    await update.message.reply_text(f"🔨 {msg.from_user.username} забанен.")
 
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
     if not msg: return
-    user = msg.from_user
-    if punishments.get(user.id, (None,))[0] == "mute":
-        del punishments[user.id]
-        await update.message.reply_text(f"{user.username} размучен")
+    if punishments.get(msg.from_user.id, (None,))[0] == "mute":
+        del punishments[msg.from_user.id]
+        await update.message.reply_text(f"🔊 {msg.from_user.username} размучен.")
 
-async def unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.reply_to_message
-    if not msg: return
-    user = msg.from_user
-    warns[user.id] = max(0, warns.get(user.id, 0) - 1)
-    await update.message.reply_text(f"{user.username} варн снят. Текущий варн {warns[user.id]}/3")
-
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.reply_to_message
-    if not msg: return
-    user = msg.from_user
-    if punishments.get(user.id, (None,))[0] == "ban":
-        del punishments[user.id]
-        await update.message.reply_text(f"{user.username} разбанен")
-
-# ===================== Русская Рулетка =====================
+# ===================== Рулетка =====================
 
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
-    if not msg: return
-    opponent = msg.from_user
-    player1 = update.effective_user
-    roulette_games[player1.id] = {
-        "player2": opponent.id,
-        "state": "choose_punishment",
-        "punishment": None,
-        "lives": {player1.id: 2, opponent.id: 2},
-    }
+    if not msg:
+        return await update.message.reply_text("Ответьте на сообщение игрока!")
+    
+    p1, p2 = update.effective_user, msg.from_user
+    roulette_games[p1.id] = {"p2": p2.id, "step": "bet"}
+    
     keyboard = [[
-        InlineKeyboardButton("Варн", callback_data="roulette_warn"),
-        InlineKeyboardButton("Мут", callback_data="roulette_mute"),
-        InlineKeyboardButton("Бан", callback_data="roulette_ban")
+        InlineKeyboardButton("Варн", callback_data="r_warn"),
+        InlineKeyboardButton("Мут", callback_data="r_mute")
     ]]
-    await update.message.reply_text(
-        f"{opponent.username}, вы выбраны для игры от {player1.username}\nВыберите наказание:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text(f"🎯 {p2.username}, вызов от {p1.username}! Ставка:", 
+                                   reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def roulette_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    for p1, game in list(roulette_games.items()):
-        if game["player2"] == user_id or p1 == user_id:
-            if game["state"] == "choose_punishment" and game["player2"] == user_id:
-                game["punishment"] = query.data.replace("roulette_", "")
-                game["state"] = "playing"
-                await query.edit_message_text(f"Игра началась! Наказание: {game['punishment']}")
-                # Упрощенный запуск
-                bullets = [0,0,0,0,1,1]
-                random.shuffle(bullets)
-                loser = random.choice([p1, game["player2"]])
-                await query.message.reply_text(f"Бах! Игрок с ID {loser} проиграл.")
-                del roulette_games[p1]
-                return
+    # Упрощенная логика для теста
+    res = random.choice(["Выстрел! 💥", "Осечка... 💨"])
+    await query.edit_message_text(f"Результат: {res}")
+
+# ===================== Запуск =====================
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("mute", mute))
-    app.add_handler(CommandHandler("warn", warn))
-    app.add_handler(CommandHandler("ban", ban))
-    app.add_handler(CommandHandler("unmute", unmute))
-    app.add_handler(CommandHandler("unwarn", unwarn))
-    app.add_handler(CommandHandler("unban", unban))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_command))
-    app.add_handler(CallbackQueryHandler(roulette_button))
-    
-    print("🚀 Бот запущен!")
-    app.run_polling()
+    if not TOKEN:
+        print("❌ ОШИБКА: BOT_TOKEN не задан в панели BotHost!")
+    else:
+        app = ApplicationBuilder().token(TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("mute", mute))
+        app.add_handler(CommandHandler("warn", warn))
+        app.add_handler(CommandHandler("ban", ban))
+        app.add_handler(CommandHandler("unmute", unmute))
+        app.add_handler(MessageHandler(filters.Regex(r"^[Рр]улетка$"), roulette_command))
+        app.add_handler(CallbackQueryHandler(roulette_callback))
+        
+        print("🚀 Бот запущен!")
+        app.run_polling()
