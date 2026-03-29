@@ -84,7 +84,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👤 Пользователь: {msg.from_user.first_name}\n⭐ Ранг: {target_rank}\n⚠️ Варны: {warns.get(target_id, 0)}/3")
         return
 
-    # Админка и Наказания
     if text.startswith("дать админку") and caller_rank >= 3:
         try:
             val = int(cmd_parts[2]) if len(cmd_parts)>2 else 1
@@ -111,32 +110,44 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.ban_chat_member(update.effective_chat.id, target_id, until_date=datetime.now()+timedelta(days=d))
         await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {d} дн.")
 
-# ===================== РУЛЕТКА (ОБНОВЛЕННАЯ) =====================
+# ===================== РУЛЕТКА (ЗАЩИЩЕННАЯ) =====================
 
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
     if not msg or update.effective_user.id == msg.from_user.id: return
-    # Сохраняем участников дуэли
-    roulette_games[update.effective_chat.id] = {
+    
+    # Привязываем игру к ID сообщения, чтобы избежать путаницы
+    game_id = f"{update.effective_chat.id}_{update.message.message_id}"
+    roulette_games[game_id] = {
         "p1": update.effective_user.id, "p1_n": update.effective_user.first_name,
         "p2": msg.from_user.id, "p2_n": msg.from_user.first_name
     }
+    
     keyboard = [[
-        InlineKeyboardButton("Варн", callback_data="r_warn"),
-        InlineKeyboardButton("Мут (10м)", callback_data="r_mute"),
-        InlineKeyboardButton("Бан (1д)", callback_data="r_ban")
+        InlineKeyboardButton("Варн", callback_data=f"r_warn_{game_id}"),
+        InlineKeyboardButton("Мут (10м)", callback_data=f"r_mute_{game_id}"),
+        InlineKeyboardButton("Бан (1д)", callback_data=f"r_ban_{game_id}")
     ]]
     await update.message.reply_text(f"🎯 {msg.from_user.first_name}, дуэль от {update.effective_user.first_name}!\nВыберите наказание:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    data = query.data.split("_") # r, mode, chatid, msgid
+    mode = data[1]
+    game_id = f"{data[2]}_{data[3]}"
+    
+    if game_id not in roulette_games:
+        return await query.answer("Игра устарела или не найдена.", show_alert=True)
+    
+    g = roulette_games[game_id]
+    
+    # ПРОВЕРКА: может нажать только участник
+    if query.from_user.id not in [g['p1'], g['p2']]:
+        return await query.answer("Это не ваша дуэль! 🚫", show_alert=True)
+    
+    await query.answer()
     chat_id = update.effective_chat.id
-    if chat_id not in roulette_games: return
-    
-    g = roulette_games[chat_id]
-    mode = query.data.replace("r_", "")
     fate = random.choice([True, False])
-    
     loser_id = g['p2'] if fate else g['p1']
     loser_name = g['p2_n'] if fate else g['p1_n']
     
@@ -151,23 +162,22 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             warns[loser_id] = warns.get(loser_id, 0) + 1
             if warns[loser_id] >= 3:
                 warns[loser_id] = 0
-                # СПЕЦИАЛЬНОЕ УСЛОВИЕ ДЛЯ РУЛЕТКИ: Мут на 1 день при 3/3 варнах
                 await context.bot.restrict_chat_member(chat_id, loser_id, permissions={"can_send_messages": False}, until_date=datetime.now() + timedelta(days=1))
-                result_text += "🛑 У игрока стало 3/3 варнов! Он замучен на 1 день!"
+                result_text += "🛑 3/3 варна! Мут на 1 день!"
             else:
                 result_text += f"⚠️ Текущие варны: {warns[loser_id]}/3"
                 
         await query.edit_message_text(result_text)
     except:
-        await query.edit_message_text(f"💥 {loser_name} проиграл, но у бота нет прав наказать его.")
+        await query.edit_message_text(f"💥 {loser_name} проиграл, но у бота нет прав.")
     
-    if chat_id in roulette_games: del roulette_games[chat_id]
+    if game_id in roulette_games: del roulette_games[game_id]
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_command))
-    app.add_handler(CallbackQueryHandler(roulette_callback))
+    app.add_handler(CallbackQueryHandler(roulette_callback, pattern="^r_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.run_polling()
