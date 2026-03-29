@@ -5,8 +5,14 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-# Исправлено: теперь бот ищет переменную BOT_TOKEN (заглавными буквами)
+# Пытаемся получить токен из системы
 TOKEN = os.getenv("BOT_TOKEN")
+
+# ПРОВЕРКА: Если токен не найден в переменных, бот выдаст понятную ошибку в консоль
+if not TOKEN or TOKEN == "ВАШ_ТОКЕН_ТУТ":
+    print("❌ ОШИБКА: Токен не найден в переменных окружения BotHost!")
+    print("Проверь, что в панели управления создана переменная BOT_TOKEN")
+    exit(1) # Останавливаем бота, чтобы не спамить ошибками
 
 # Хранилище наказаний и админов
 admins = set()
@@ -137,7 +143,6 @@ async def roulette_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for p1, game in roulette_games.items():
         if game["player2"] == user_id or p1 == user_id:
             if game["state"] == "choose_punishment" and p1 == user_id:
-                # только второй игрок подтверждает
                 await query.edit_message_text("Только выбранный игрок может подтвердить выбор.")
                 return
             elif game["state"] == "choose_punishment" and game["player2"] == user_id:
@@ -155,17 +160,14 @@ async def start_roulette_game(query, game):
     player_order = [list(game["lives"].keys())[0], list(game["lives"].keys())[1]]
     for i, bullet in enumerate(bullets):
         current_player = player_order[i % 2]
-        other_player = player_order[(i + 1) % 2]
-        # Простейшая имитация выстрела
         if bullet == 1:
             game["lives"][current_player] -= 1
-        # После каждого выстрела проверка жизни
         if game["lives"][current_player] <= 0:
             await query.message.reply_text(
                 f"Игрок {current_player} проиграл. Применяется наказание: {game['punishment'].capitalize()}"
             )
             break
-    del roulette_games[player_order[0]]  # удаляем игру
+    del roulette_games[player_order[0]]
 
 # ===================== Основная =====================
 
@@ -183,7 +185,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("unwarn", unwarn))
     app.add_handler(CommandHandler("unban", unban))
 
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^Рулетка$"), roulette_command))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_command))
     app.add_handler(CallbackQueryHandler(roulette_button))
 
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
