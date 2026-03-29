@@ -15,53 +15,68 @@ roulette_games = {}
 def is_admin(user_id):
     return user_id in admins
 
-# ===================== Админ-команды =====================
+def parse_time(args, default, min_val, max_val):
+    if args and args[0].isdigit():
+        val = int(args[0])
+        return max(min_val, min(max_val, val))
+    return default
+
+# ===================== Команды =====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await help_command(update, context)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Бот запущен!\n\n"
-        "Команды (ответом на сообщение):\n"
-        "/mute [мин] — замутить\n"
-        "/warn — выдать варн (3 = мут 30м)\n"
-        "/ban [дней] — забанить\n"
-        "/unmute, /unwarn, /unban — снять наказание\n\n"
-        "🎮 Для игры ответь юзеру словом 'Рулетка'"
+        "📜 **Список команд (ответом на сообщение):**\n\n"
+        "🔹 `/mute [мин]` — Мут (1 - 525600 мин)\n"
+        "🔹 `/warn` — Варн (3/3 = мут 30 мин)\n"
+        "🔹 `/ban [дней]` — Бан (1 - 365 дней)\n"
+        "🔹 `/unmute` — Снять мут\n"
+        "🔹 `/unwarn` — Снять 1 варн\n"
+        "🔹 `/unban` — Разбанить\n\n"
+        "🎮 Напиши **'Рулетка'** в ответ юзеру для дуэли."
     )
 
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     msg = update.message.reply_to_message
-    if not msg: return await update.message.reply_text("Ответь на сообщение.")
+    if not msg: return await update.message.reply_text("❌ Ответь на сообщение пользователя!")
     
-    m = int(context.args[0]) if context.args and context.args[0].isdigit() else 60
-    until = datetime.now() + timedelta(minutes=m)
+    mins = parse_time(context.args, 60, 1, 525600)
+    until = datetime.now() + timedelta(minutes=mins)
     try:
-        await context.bot.restrict_chat_member(update.effective_chat.id, msg.from_user.id, permissions={"can_send_messages": False}, until_date=until)
-        await update.message.reply_text(f"🔇 {msg.from_user.first_name} в муте на {m} мин.")
+        await context.bot.restrict_chat_member(update.effective_chat.id, msg.from_user.id, 
+            permissions={"can_send_messages": False}, until_date=until)
+        await update.message.reply_text(f"🔇 {msg.from_user.first_name} в муте на {mins} мин.")
     except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     msg = update.message.reply_to_message
-    if not msg: return
+    if not msg: return await update.message.reply_text("❌ Ответь на сообщение!")
+    
     uid = msg.from_user.id
     warns[uid] = warns.get(uid, 0) + 1
     if warns[uid] >= 3:
         warns[uid] = 0
         until = datetime.now() + timedelta(minutes=30)
-        await context.bot.restrict_chat_member(update.effective_chat.id, uid, permissions={"can_send_messages": False}, until_date=until)
-        await update.message.reply_text(f"⚠️ 3/3 варна! {msg.from_user.first_name} в муте на 30м.")
+        await context.bot.restrict_chat_member(update.effective_chat.id, uid, 
+            permissions={"can_send_messages": False}, until_date=until)
+        await update.message.reply_text(f"⚠️ 3/3 варна! {msg.from_user.first_name} замучен на 30м.")
     else:
         await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[uid]}/3")
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     msg = update.message.reply_to_message
-    if not msg: return
-    d = int(context.args[0]) if context.args and context.args[0].isdigit() else 1
+    if not msg: return await update.message.reply_text("❌ Ответь на сообщение!")
+    
+    days = parse_time(context.args, 1, 1, 365)
+    until = datetime.now() + timedelta(days=days)
     try:
-        await context.bot.ban_chat_member(update.effective_chat.id, msg.from_user.id, until_date=datetime.now() + timedelta(days=d))
-        await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {d} дн.")
+        await context.bot.ban_chat_member(update.effective_chat.id, msg.from_user.id, until_date=until)
+        await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {days} дн.")
     except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
 
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,7 +84,8 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
     if not msg: return
     try:
-        await context.bot.restrict_chat_member(update.effective_chat.id, msg.from_user.id, permissions={"can_send_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True})
+        await context.bot.restrict_chat_member(update.effective_chat.id, msg.from_user.id, 
+            permissions={"can_send_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True})
         await update.message.reply_text(f"🔊 Мут с {msg.from_user.first_name} снят.")
     except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
 
@@ -90,13 +106,13 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ {msg.from_user.first_name} разбанен.")
     except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
 
-# ===================== Русская Рулетка =====================
+# ===================== Рулетка =====================
 
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
-    if not msg: return await update.message.reply_text("Ответь на сообщение оппонента!")
+    if not msg: return
     p1, p2 = update.effective_user, msg.from_user
-    if p1.id == p2.id: return await update.message.reply_text("Нельзя играть с собой.")
+    if p1.id == p2.id: return
     roulette_games[p2.id] = {"p1": p1.id, "p1_n": p1.first_name, "p2": p2.id, "p2_n": p2.first_name}
     keyboard = [[
         InlineKeyboardButton("Варн", callback_data="r_warn"),
@@ -122,12 +138,13 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.ban_chat_member(update.effective_chat.id, l_id, until_date=datetime.now() + timedelta(days=1))
         else:
             warns[l_id] = warns.get(l_id, 0) + 1
-    except: await query.message.reply_text("Бот не смог наказать проигравшего (права?)")
+    except: pass
     del roulette_games[uid]
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("warn", warn))
     app.add_handler(CommandHandler("ban", ban))
@@ -136,5 +153,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("unban", unban))
     app.add_handler(MessageHandler(filters.REPLY & filters.Regex(r"(?i)^Рулетка$"), roulette_command))
     app.add_handler(CallbackQueryHandler(roulette_callback, pattern="^r_"))
-    print("🚀 Бот запущен!")
     app.run_polling()
