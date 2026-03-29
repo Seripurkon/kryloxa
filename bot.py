@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-# Данные
+# Твой токен и ID владельца
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
-OWNER_ID = 5679520675  # Твой ID (Ранг 4)
+OWNER_ID = 5679520675 
 
 # База данных в памяти
 user_ranks = {OWNER_ID: 4} 
@@ -32,17 +32,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = msg.from_user.id
     target_rank = get_rank(target_id)
     cmd_parts = text.split()
-    cmd = cmd_parts[0]
-
+    
     # --- УПРАВЛЕНИЕ АДМИНКАМИ (Ранг 3-4) ---
     if text.startswith("дать админку") and caller_rank >= 3:
         try:
-            new_rank = int(cmd_parts[2]) if len(cmd_parts) > 2 else 1
+            new_rank = int(cmd_parts[2]) if len(cmd_parts) > 2 and cmd_parts[2].isdigit() else 1
             if new_rank >= caller_rank and caller_id != OWNER_ID:
                 return await update.message.reply_text("Нельзя дать ранг выше своего!")
             user_ranks[target_id] = min(3, new_rank)
             await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь ранг {user_ranks[target_id]}")
-        except: await update.message.reply_text("Используй: Дать админку [1-3]")
+        except: pass
         return
 
     elif text == "снять админку" and caller_rank >= 3:
@@ -54,12 +53,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- НАКАЗАНИЯ (Ранг 1-4) ---
     if caller_rank < 1: return 
-    
     if target_rank >= caller_rank and caller_id != OWNER_ID:
         return await update.message.reply_text("🛡️ Этот пользователь защищен рангом.")
 
     # МОЛЧИ (Мут)
-    if cmd == "молчи":
+    if cmd_parts[0] == "молчи":
         mins = int(cmd_parts[1]) if len(cmd_parts) > 1 and cmd_parts[1].isdigit() else 60
         mins = max(1, min(525600, mins))
         until = datetime.now() + timedelta(minutes=mins)
@@ -67,28 +65,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.restrict_chat_member(update.effective_chat.id, target_id, 
                 permissions={"can_send_messages": False}, until_date=until)
             await update.message.reply_text(f"🔇 {msg.from_user.first_name} замолчал на {mins} мин.")
-        except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
+        except: pass
 
     # СКАЖИ (Размут)
-    elif cmd == "скажи":
-        await context.bot.restrict_chat_member(update.effective_chat.id, target_id, 
-            permissions={"can_send_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True})
-        await update.message.reply_text(f"🔊 {msg.from_user.first_name} размучен.")
+    elif cmd_parts[0] == "скажи":
+        try:
+            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, 
+                permissions={"can_send_messages": True, "can_send_polls": True, "can_send_other_messages": True, "can_add_web_page_previews": True})
+            await update.message.reply_text(f"🔊 {msg.from_user.first_name} размучен.")
+        except: pass
 
     # БАН
-    elif cmd == "бан":
+    elif cmd_parts[0] == "бан":
         days = int(cmd_parts[1]) if len(cmd_parts) > 1 and cmd_parts[1].isdigit() else 1
         until = datetime.now() + timedelta(days=max(1, min(365, days)))
-        await context.bot.ban_chat_member(update.effective_chat.id, target_id, until_date=until)
-        await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {days} дн.")
+        try:
+            await context.bot.ban_chat_member(update.effective_chat.id, target_id, until_date=until)
+            await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен на {days} дн.")
+        except: pass
 
     # РАЗБАН
-    elif cmd == "разбан":
-        await context.bot.unban_chat_member(update.effective_chat.id, target_id, only_if_banned=True)
-        await update.message.reply_text(f"✅ {msg.from_user.first_name} разбанен.")
+    elif cmd_parts[0] == "разбан":
+        try:
+            await context.bot.unban_chat_member(update.effective_chat.id, target_id, only_if_banned=True)
+            await update.message.reply_text(f"✅ {msg.from_user.first_name} разбанен.")
+        except: pass
 
     # ВАРН
-    elif cmd == "варн":
+    elif cmd_parts[0] == "варн":
         warns[target_id] = warns.get(target_id, 0) + 1
         if warns[target_id] >= 3:
             warns[target_id] = 0
@@ -108,6 +112,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank = get_rank(update.effective_user.id)
     text = (
+        "Подпишитесь на новостной канал бота и следите за его разработкой😊\n\n"
         f"👤 Твой ранг: {rank}\n\n"
         "Список команд (ответом на сообщение):\n"
         "• Молчи [мин] / Скажи\n"
@@ -116,7 +121,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if rank >= 3:
         text += "⭐ Дать админку [1-3] / Снять админку\n"
-    text += "\n🎮 Напиши Рулетка для дуэли."
+    
+    text += "\n🎮 Напиши Рулетка для дуэли"
     await update.message.reply_text(text)
 
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
