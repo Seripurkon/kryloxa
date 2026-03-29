@@ -126,7 +126,7 @@ async def add_admin(message: types.Message):
         await message.reply(f"✅ Пользователь {username} получил админку ранг {rank}")
     except:
         await message.reply("⚠️ Использование: /addadmin @username <ранг>")
-        @dp.message(Command("removeadmin"))
+@dp.message(Command("removeadmin"))
 async def remove_admin(message: types.Message):
     if not check_rank(message.from_user.id, 4):
         await message.reply("❌ Только владелец может удалять админов")
