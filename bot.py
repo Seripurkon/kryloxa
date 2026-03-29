@@ -5,10 +5,8 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-# === ВСТАВЬ СВОЙ ТОКЕН НИЖЕ В КАВЫЧКАХ ===
+# Твой токен и ID админа уже вписаны
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
-
-# Список ID админов (ЗАМЕНИ 123456789 НА СВОЙ ID)
 admins = {5679520675} 
 
 warns = {}
@@ -21,25 +19,32 @@ def is_admin(user_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ Бот готов к работе!\n"
+        "✅ Бот запущен и готов к работе!\n\n"
         "Команды (ответом на сообщение):\n"
-        "/mute [мин], /warn, /ban\n"
-        "Для игры ответь пользователю словом 'Рулетка'."
+        "/mute [минуты] — заткнуть пользователя\n"
+        "/warn — выдать предупреждение (3 = мут)\n"
+        "/ban — забанить навсегда\n\n"
+        "🎮 Для игры ответь пользователю словом 'Рулетка'"
     )
 
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     msg = update.message.reply_to_message
-    if not msg: return await update.message.reply_text("Ответь на сообщение пользователя.")
+    if not msg: return await update.message.reply_text("Ошибка: ответь на сообщение пользователя.")
     
     duration = int(context.args[0]) if context.args and context.args[0].isdigit() else 60
     until = datetime.now() + timedelta(minutes=duration)
     
     try:
-        await context.bot.restrict_chat_member(update.effective_chat.id, msg.from_user.id, permissions={"can_send_messages": False}, until_date=until)
+        await context.bot.restrict_chat_member(
+            update.effective_chat.id, 
+            msg.from_user.id, 
+            permissions={"can_send_messages": False}, 
+            until_date=until
+        )
         await update.message.reply_text(f"🔇 {msg.from_user.first_name} замучен на {duration} мин.")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        await update.message.reply_text(f"Ошибка (проверь права бота): {e}")
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
@@ -98,13 +103,13 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.answer("Это не твой вызов!", show_alert=True)
 
     game = roulette_games[user_id]
-    punishment = "варн" if query.data == "r_warn" else "мут"
+    punishment_type = "варн" if query.data == "r_warn" else "мут"
     
     fate = random.choice([True, False]) 
     loser_id = game['p2'] if fate else game['p1']
     loser_name = game['p2_name'] if fate else game['p1_name']
 
-    await query.edit_message_text(f"💥 БАХ! {loser_name} проиграл и получает {punishment}!")
+    await query.edit_message_text(f"💥 БАХ! {loser_name} проиграл и получает {punishment_type}!")
     
     try:
         if query.data == "r_mute":
@@ -113,7 +118,7 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             warns[loser_id] = warns.get(loser_id, 0) + 1
     except:
-        await query.message.reply_text("⚠️ Не удалось применить наказание (бот не админ или цель — админ)")
+        await query.message.reply_text("⚠️ Не удалось наказать (бот не админ или цель — админ)")
 
     del roulette_games[user_id]
 
@@ -126,9 +131,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("warn", warn))
     app.add_handler(CommandHandler("ban", ban))
-    # ИСПРАВЛЕННЫЙ ФЛАГ ТУТ:
     app.add_handler(MessageHandler(filters.REPLY & filters.Regex(r"(?i)^Рулетка$"), roulette_command))
     app.add_handler(CallbackQueryHandler(roulette_callback, pattern="^r_"))
 
-    print("🚀 Бот запущен!")
+    print("🚀 Бот запущен! Проверь его в Telegram.")
     app.run_polling()
