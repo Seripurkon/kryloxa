@@ -7,9 +7,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 
 # Данные
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
-OWNER_ID = 5679520675  # Ранг 4 (Владелец)
+OWNER_ID = 5679520675  # Твой ID (Ранг 4)
 
-# База данных (в оперативной памяти)
+# База данных в памяти
 user_ranks = {OWNER_ID: 4} 
 warns = {}
 roulette_games = {}
@@ -21,40 +21,42 @@ def get_rank(user_id):
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
-    text = update.message.text.strip()
+    
+    text = update.message.text.strip().lower()
     msg = update.message.reply_to_message
     caller_id = update.effective_user.id
     caller_rank = get_rank(caller_id)
     
-    if not msg: return # Все команды ниже — только через реплай
+    if not msg: return 
+    
     target_id = msg.from_user.id
     target_rank = get_rank(target_id)
-    
-    cmd_parts = text.lower().split()
+    cmd_parts = text.split()
     cmd = cmd_parts[0]
 
     # --- УПРАВЛЕНИЕ АДМИНКАМИ (Ранг 3-4) ---
-    if text.lower().startswith("дать админку") and caller_rank >= 3:
+    if text.startswith("дать админку") and caller_rank >= 3:
         try:
             new_rank = int(cmd_parts[2]) if len(cmd_parts) > 2 else 1
             if new_rank >= caller_rank and caller_id != OWNER_ID:
-                return await update.message.reply_text("❌ Нельзя дать ранг выше своего!")
+                return await update.message.reply_text("Нельзя дать ранг выше своего!")
             user_ranks[target_id] = min(3, new_rank)
-            await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь имеет ранг {user_ranks[target_id]}")
+            await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь ранг {user_ranks[target_id]}")
         except: await update.message.reply_text("Используй: Дать админку [1-3]")
+        return
 
-    elif cmd == "снять" and len(cmd_parts) > 1 and cmd_parts[1] == "админку" and caller_rank >= 3:
+    elif text == "снять админку" and caller_rank >= 3:
         if target_rank >= caller_rank and caller_id != OWNER_ID:
-            return await update.message.reply_text("❌ Недостаточно прав.")
+            return await update.message.reply_text("Недостаточно прав.")
         if target_id in user_ranks: del user_ranks[target_id]
         await update.message.reply_text(f"❌ {msg.from_user.first_name} больше не админ.")
+        return
 
     # --- НАКАЗАНИЯ (Ранг 1-4) ---
-    if caller_rank < 1: return # Дальше только для админов
+    if caller_rank < 1: return 
     
-    # Защита: админ не может наказать админа равного или выше рангом
     if target_rank >= caller_rank and caller_id != OWNER_ID:
-        return await update.message.reply_text("🛡️ Этот пользователь защищен своим рангом.")
+        return await update.message.reply_text("🛡️ Этот пользователь защищен рангом.")
 
     # МОЛЧИ (Мут)
     if cmd == "молчи":
@@ -65,7 +67,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.restrict_chat_member(update.effective_chat.id, target_id, 
                 permissions={"can_send_messages": False}, until_date=until)
             await update.message.reply_text(f"🔇 {msg.from_user.first_name} замолчал на {mins} мин.")
-        except Exception as e: await update.message.reply_text(f"Ошибка прав: {e}")
+        except Exception as e: await update.message.reply_text(f"Ошибка: {e}")
 
     # СКАЖИ (Размут)
     elif cmd == "скажи":
@@ -92,29 +94,29 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             warns[target_id] = 0
             until = datetime.now() + timedelta(minutes=30)
             await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages": False}, until_date=until)
-            await update.message.reply_text(f"⚠️ 3/3 варна! {msg.from_user.first_name} замучен на 30м.")
+            await update.message.reply_text(f"⚠️ 3/3 варна! {msg.from_user.first_name} в муте на 30м.")
         else:
             await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[target_id]}/3")
 
     # СНЯТЬ ВАРН
-    elif text.lower().startswith("снять варн"):
+    elif text.startswith("снять варн"):
         warns[target_id] = max(0, warns.get(target_id, 0) - 1)
         await update.message.reply_text(f"✅ Варн снят. У {msg.from_user.first_name} теперь {warns[target_id]}/3")
 
-# ===================== Стандартные команды =====================
+# ===================== Команды помощи =====================
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank = get_rank(update.effective_user.id)
     text = (
         f"👤 Твой ранг: {rank}\n\n"
-        "📜 **Команды (ответом):**\n"
-        "• `Молчи [мин]`, `Скажи`\n"
-        "• `Бан [дн]`, `Разбан`\n"
-        "• `Варн`, `Снять варн`\n"
+        "Список команд (ответом на сообщение):\n"
+        "• Молчи [мин] / Скажи\n"
+        "• Бан [дн] / Разбан\n"
+        "• Варн / Снять варн\n"
     )
     if rank >= 3:
-        text += "⭐ `Дать админку [1-3]`, `Снять админку`\n"
-    text += "\n🎮 Напиши **'Рулетка'** для дуэли."
+        text += "⭐ Дать админку [1-3] / Снять админку\n"
+    text += "\n🎮 Напиши Рулетка для дуэли."
     await update.message.reply_text(text)
 
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
