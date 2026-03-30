@@ -5,13 +5,15 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-# --- ДАННЫЕ ---
+# --- КОНФИГ ---
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
 OWNER_ID = 5679520675 
 FRIEND_ID = 782585931
 RANKS_FILE = "ranks.json"
 
-# Статистика и сброс
+# --- ДАННЫЕ И СТАТИСТИКА ---
+warns = {}
+roulette_games = {}
 daily_stats = {} # {user_id: {"name": str, "count": int}}
 last_reset_day = datetime.now().day
 
@@ -29,8 +31,6 @@ def save_ranks():
         json.dump(user_ranks, f)
 
 user_ranks = load_ranks()
-warns = {}
-roulette_games = {}
 
 def get_rank(user_id):
     if user_id == OWNER_ID: return 4
@@ -80,34 +80,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
-    
     check_daily_reset()
+    
     text = update.message.text.strip().lower()
     user = update.effective_user
     
-    # Считаем сообщение для ТП
+    # Счётчик для ТП
     if user.id not in daily_stats:
         daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
     # Команда ТП
     if text == "тп":
-        if not daily_stats:
-            return await update.message.reply_text("Сегодня еще никто не писал!")
+        if not daily_stats: return await update.message.reply_text("Сегодня еще никто не писал!")
         top_list = sorted(daily_stats.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
         msg_top = "🏆 **Топ общительных за сегодня (ТП):**\n\n"
         for i, (uid, data) in enumerate(top_list, 1):
             msg_top += f"{i}. {data['name']} — {data['count']} сообщ.\n"
-        await update.message.reply_text(msg_top, parse_mode="Markdown")
-        return
+        return await update.message.reply_text(msg_top, parse_mode="Markdown")
 
     # Команда ОБО МНЕ
     if text == "обо мне":
         rank = get_rank(user.id)
         w = warns.get(user.id, 0)
         msgs = daily_stats.get(user.id, {}).get("count", 0)
-        await update.message.reply_text(f"👤 **О вас:**\nИмя: {user.first_name}\nID: `{user.id}`\n⭐ Ранг: {rank}\n⚠️ Варны: {w}/3\n✉️ Сообщений сегодня: {msgs}", parse_mode="Markdown")
-        return
+        return await update.message.reply_text(f"👤 **О вас:**\nИмя: {user.first_name}\nID: `{user.id}`\n⭐ Ранг: {rank}\n⚠️ Варны: {w}/3\n✉️ Сообщений сегодня: {msgs}", parse_mode="Markdown")
 
     # Команды ОТВЕТОМ
     msg = update.message.reply_to_message
@@ -118,22 +115,41 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caller_rank = get_rank(user.id)
     cmd_parts = text.split()
 
+    # ОБНОВЛЕННАЯ ИНФА С ТАЙМЕРОМ МУТА
     if text == "инфа":
-        w_c = warns.get(target_id, 0)
-        await update.message.reply_text(f"👤 Пользователь: {msg.from_user.first_name}\n⭐ Ранг: {target_rank}\n⚠️ Варны: {w_c}/3")
+        try:
+            chat_member = await context.bot.get_chat_member(update.effective_chat.id, target_id)
+            w_c = warns.get(target_id, 0)
+            status_msg = "✅ Ограничений нет"
+            
+            if chat_member.status == 'restricted' and not chat_member.can_send_messages:
+                until = chat_member.until_date
+                if until:
+                    now = datetime.now(until.tzinfo)
+                    diff = until - now
+                    if diff.total_seconds() > 0:
+                        h, m = int(diff.total_seconds() // 3600), int((diff.total_seconds() % 3600) // 60)
+                        status_msg = f"🔇 В муте (осталось {h}ч {m}м)"
+                    else: status_msg = "✅ Ограничений нет"
+                else: status_msg = "🔇 В муте навсегда"
+
+            res = (f"👤 Пользователь: {msg.from_user.first_name}\n⭐ Ранг: {target_rank}\n"
+                   f"⚠️ Варны: {w_c}/3\nСтатус наказания: {status_msg}")
+            await update.message.reply_text(res)
+        except: await update.message.reply_text("❌ Ошибка получения данных.")
         return
 
-    # Админка
+    # УПРАВЛЕНИЕ АДМИНКАМИ
     if text.startswith("дать админку") and caller_rank >= 3:
         try:
             val = int(cmd_parts[2]) if len(cmd_parts) > 2 and cmd_parts[2].isdigit() else 1
-            if val >= caller_rank and user.id != OWNER_ID: return await update.message.reply_text("Нельзя дать ранг выше своего!")
+            if val >= caller_rank and user.id != OWNER_ID: return await update.message.reply_text("Ранг выше вашего!")
             user_ranks[target_id] = min(3, val); save_ranks()
             await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь ранг {user_ranks[target_id]}")
         except: pass
         return
 
-    # Наказания
+    # МОДЕРАЦИЯ
     if caller_rank < 1 or (target_rank >= caller_rank and user.id != OWNER_ID): return
 
     try:
@@ -165,17 +181,10 @@ async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     g_id = str(update.message.message_id)
     p1, p2 = update.effective_user, msg.from_user
-    
-    roulette_games[g_id] = {
-        "p1": p1.id, "p1_n": p1.first_name,
-        "p2": p2.id, "p2_n": p2.first_name,
-        "lives": {p1.id: 2, p2.id: 2},
-        "turn": p2.id,
-        "mode": None
-    }
+    roulette_games[g_id] = {"p1": p1.id, "p1_n": p1.first_name, "p2": p2.id, "p2_n": p2.first_name, "lives": {p1.id: 2, p2.id: 2}, "turn": p2.id, "mode": None}
     reload_chamber(roulette_games[g_id])
     
-    text = (f"⚠️ **ДУЭЛЬ** ⚠️\nВ барабане 6 патронов ({roulette_games[g_id]['info']}).\n"
+    text = (f"⚠️ **ПРАВИЛА ДУЭЛИ** ⚠️\nВ барабане 6 патронов ({roulette_games[g_id]['info']}).\n"
             f"У каждого по **2 ❤️**.\nХолостой в себя = доп. ход.\n\n👊 {p2.first_name}, выбирай ставку:")
     kb = [[InlineKeyboardButton("Варн", callback_data=f"set_warn_{g_id}"),
            InlineKeyboardButton("Мут (10м)", callback_data=f"set_mute_{g_id}"),
@@ -197,33 +206,24 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if u_id != g['p2']: return await query.answer("Выбирает тот, кого вызвали!")
         g['mode'] = val
         await update_roulette_msg(query, g, g_id)
-    
     elif action == "mercy":
-        await query.edit_message_text(f"🤝 {query.from_user.first_name} пощадил соперника. Игра завершена!")
+        await query.edit_message_text(f"🤝 {query.from_user.first_name} пощадил соперника. Игра окончена!")
         del roulette_games[g_id]
-
     elif action == "shoot":
         if u_id != g['turn']: return await query.answer("Не твой ход!")
         if not g['chamber']: reload_chamber(g)
-
         bullet = g['chamber'].pop(0)
-        target = val # 'self' или 'opp'
-        res = ""
-
+        target, res = val, ""
         if target == 'self':
             if bullet:
-                g['lives'][u_id] -= 1
-                res = "💥 БАХ! Попал в себя!"
+                g['lives'][u_id] -= 1; res = "💥 БАХ! Попал в себя!"
                 g['turn'] = g['p2'] if u_id == g['p1'] else g['p1']
-            else:
-                res = "💨 Холостой! Доп. ход!"
+            else: res = "💨 Холостой! Доп. ход!"
         else:
             opp_id = g['p2'] if u_id == g['p1'] else g['p1']
             if bullet:
-                g['lives'][opp_id] -= 1
-                res = f"💥 БАХ! Попадание в противника!"
-            else:
-                res = "💨 Холостой... Промах."
+                g['lives'][opp_id] -= 1; res = f"💥 БАХ! Попадание!"
+            else: res = "💨 Холостой... Промах."
             g['turn'] = opp_id
 
         if any(l <= 0 for l in g['lives'].values()):
@@ -231,9 +231,7 @@ async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finish_roulette(query, g, dead_id, context)
             if g_id in roulette_games: del roulette_games[g_id]
         else:
-            if not g['chamber']: 
-                reload_chamber(g)
-                res += "\n🔄 Перезарядка!"
+            if not g['chamber']: reload_chamber(g); res += "\n🔄 Перезарядка!"
             await update_roulette_msg(query, g, g_id, res)
 
 async def update_roulette_msg(query, g, g_id, last=""):
@@ -259,9 +257,10 @@ async def finish_roulette(query, g, l_id, context):
                 warns[l_id] = 0
                 await context.bot.restrict_chat_member(chat_id, l_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(days=1))
                 txt += "\n🛑 3/3 варна! Мут на 1 день!"
-    except: txt += "\n(Нет прав)"
+    except: txt += "\n(Нет прав на наказание)"
     await query.edit_message_text(txt, parse_mode="Markdown")
 
+# --- ЗАПУСК ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
