@@ -2,240 +2,271 @@ import os
 import json
 import random
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 
-TOKEN = "ТВОЙ_ТОКЕН"
+# --- КОНФИГ ---
+TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
+OWNER_ID = 5679520675 
+FRIEND_ID = 782585931
+RANKS_FILE = "ranks.json"
 
-OWNER_ID = 5679520675
-
-ECONOMY_FILE = "economy.json"
-STATS_FILE = "stats.json"
-
-def load_json(filename, default):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return default
-
-def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-economy = load_json(ECONOMY_FILE, {})
-stats = load_json(STATS_FILE, {"daily": {}, "last_chat": {}})
-
-daily_stats = stats["daily"]
-last_chat = stats["last_chat"]
-
+# --- ДАННЫЕ И СТАТИСТИКА ---
+warns = {}
 roulette_games = {}
+daily_stats = {} # {user_id: {"name": str, "count": int}}
+last_reset_day = datetime.now().day
 
-def get_balance(uid):
-    if str(uid) not in economy:
-        economy[str(uid)] = {"balance": 0, "last_bonus": "2000-01-01 00:00:00"}
-    return economy[str(uid)]["balance"]
+def load_ranks():
+    if os.path.exists(RANKS_FILE):
+        try:
+            with open(RANKS_FILE, "r") as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except: pass
+    return {OWNER_ID: 4, FRIEND_ID: 3}
 
-def add_balance(uid, amt):
-    get_balance(uid)
-    economy[str(uid)]["balance"] += amt
-    save_json(ECONOMY_FILE, economy)
+def save_ranks():
+    with open(RANKS_FILE, "w") as f:
+        json.dump(user_ranks, f)
 
-# ================= СТАРТ =================
+user_ranks = load_ranks()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Kryvox Bot\n\n"
-        "Рулетка (ответом)\n"
-        "Баланс\n"
-        "Бонус\n"
-        "ТП\n"
-        "Магазин"
-    )
+def get_rank(user_id):
+    if user_id == OWNER_ID: return 4
+    if user_id == FRIEND_ID: return 3
+    return user_ranks.get(user_id, 0)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Напиши 'Рулетка' ответом на сообщение")
-
-# ================= МАГАЗИН =================
-
-async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    bal = get_balance(uid)
-
-    kb = [
-        [InlineKeyboardButton("Снять мут (1000)", callback_data="unmute")]
-    ]
-
-    await update.message.reply_text(
-        f"💰 Баланс: {bal} KLC",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid = query.from_user.id
-
-    if query.data == "unmute":
-        chat_id = last_chat.get(str(uid))
-
-        if not chat_id:
-            return await query.answer("Нет данных о группе", show_alert=True)
-
-        await context.bot.restrict_chat_member(
-            chat_id,
-            uid,
-            permissions=ChatPermissions(can_send_messages=True)
-        )
-
-        add_balance(uid, -1000)
-
-        await query.edit_message_text("✅ Размут выдан")
-
-# ================= ТЕКСТ =================
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    uid = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    if update.effective_chat.type != "private":
-        last_chat[str(uid)] = chat_id
-        stats["last_chat"] = last_chat
-
-    if str(uid) not in daily_stats:
-        daily_stats[str(uid)] = {"name": update.effective_user.first_name, "count": 0}
-
-    daily_stats[str(uid)]["count"] += 1
-    stats["daily"] = daily_stats
-    save_json(STATS_FILE, stats)
-
-    if text == "баланс":
-        await update.message.reply_text(f"💰 {get_balance(uid)} KLC")
-
-    if text == "бонус":
-        add_balance(uid, random.randint(100, 300))
-        await update.message.reply_text("🎁 Бонус получен")
-
-    if text == "тп":
-        top = sorted(daily_stats.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
-        msg = "🏆 Топ:\n"
-        for i, (u, d) in enumerate(top, 1):
-            msg += f"{i}. {d['name']} — {d['count']}\n"
-        await update.message.reply_text(msg)
-
-    if text == "магазин":
-        await shop(update, context)
-
-# ================= РУЛЕТКА =================
+def check_daily_reset():
+    global last_reset_day, daily_stats
+    current_day = datetime.now().day
+    if current_day != last_reset_day:
+        daily_stats = {}
+        last_reset_day = current_day
 
 def reload_chamber(g):
-    bullets = random.randint(1, 4)
-    g["chamber"] = [True]*bullets + [False]*(6-bullets)
-    random.shuffle(g["chamber"])
+    live = random.randint(1, 4)
+    chamber = [True] * live + [False] * (6 - live)
+    random.shuffle(chamber)
+    g['chamber'] = chamber
+    g['info'] = f"Боевых: {live}, Холостых: {6 - live}"
 
-async def roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- КОМАНДЫ START / HELP ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rank = get_rank(update.effective_user.id)
+    text = (
+        "Подпишитесь на новостной канал бота и следите за его разработкой @kryloxa_offcial 😊\n\n"
+        f"👤 Твой ранг: {rank}\n\n"
+        "Список команд - /help"
+    )
+    await update.message.reply_text(text)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rank = get_rank(update.effective_user.id)
+    text = (
+        "📜 **Список доступных команд:**\n\n"
+        "ℹ️ **Общие:**\n"
+        "Инфа — статус игрока (ответом)\n"
+        "Обо мне — инфо о себе\n"
+        "ТП — топ общительных за день\n"
+        "Рулетка — дуэль (ответом)\n\n"
+    )
+    if rank >= 1:
+        text += "🛠 **Модерация (ответом):**\nМолчи [мин] / Скажи\nБан [дн] / Разбан\nВарн / Снять варн\n\n"
+    if rank >= 3:
+        text += "⭐ **Админка:**\nДать админку [1-3] / Снять админку\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# --- ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА ---
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    check_daily_reset()
+    
+    text = update.message.text.strip().lower()
+    user = update.effective_user
+    
+    # Счётчик для ТП
+    if user.id not in daily_stats:
+        daily_stats[user.id] = {"name": user.first_name, "count": 0}
+    daily_stats[user.id]["count"] += 1
+
+    # Команда ТП
+    if text == "тп":
+        if not daily_stats: return await update.message.reply_text("Сегодня еще никто не писал!")
+        top_list = sorted(daily_stats.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
+        msg_top = "🏆 **Топ общительных за сегодня (ТП):**\n\n"
+        for i, (uid, data) in enumerate(top_list, 1):
+            msg_top += f"{i}. {data['name']} — {data['count']} сообщ.\n"
+        return await update.message.reply_text(msg_top, parse_mode="Markdown")
+
+    # Команда ОБО МНЕ
+    if text == "обо мне":
+        rank = get_rank(user.id)
+        w = warns.get(user.id, 0)
+        msgs = daily_stats.get(user.id, {}).get("count", 0)
+        return await update.message.reply_text(f"👤 **О вас:**\nИмя: {user.first_name}\nID: `{user.id}`\n⭐ Ранг: {rank}\n⚠️ Варны: {w}/3\n✉️ Сообщений сегодня: {msgs}", parse_mode="Markdown")
+
+    # Команды ОТВЕТОМ
     msg = update.message.reply_to_message
-    if not msg:
+    if not msg: return
+    
+    target_id = msg.from_user.id
+    target_rank = get_rank(target_id)
+    caller_rank = get_rank(user.id)
+    cmd_parts = text.split()
+
+    # ОБНОВЛЕННАЯ ИНФА С ТАЙМЕРОМ МУТА
+    if text == "инфа":
+        try:
+            chat_member = await context.bot.get_chat_member(update.effective_chat.id, target_id)
+            w_c = warns.get(target_id, 0)
+            status_msg = "✅ Ограничений нет"
+            
+            if chat_member.status == 'restricted' and not chat_member.can_send_messages:
+                until = chat_member.until_date
+                if until:
+                    now = datetime.now(until.tzinfo)
+                    diff = until - now
+                    if diff.total_seconds() > 0:
+                        h, m = int(diff.total_seconds() // 3600), int((diff.total_seconds() % 3600) // 60)
+                        status_msg = f"🔇 В муте (осталось {h}ч {m}м)"
+                    else: status_msg = "✅ Ограничений нет"
+                else: status_msg = "🔇 В муте навсегда"
+
+            res = (f"👤 Пользователь: {msg.from_user.first_name}\n⭐ Ранг: {target_rank}\n"
+                   f"⚠️ Варны: {w_c}/3\nСтатус наказания: {status_msg}")
+            await update.message.reply_text(res)
+        except: await update.message.reply_text("❌ Ошибка получения данных.")
         return
 
-    p1 = update.effective_user
-    p2 = msg.from_user
+    # УПРАВЛЕНИЕ АДМИНКАМИ
+    if text.startswith("дать админку") and caller_rank >= 3:
+        try:
+            val = int(cmd_parts[2]) if len(cmd_parts) > 2 and cmd_parts[2].isdigit() else 1
+            if val >= caller_rank and user.id != OWNER_ID: return await update.message.reply_text("Ранг выше вашего!")
+            user_ranks[target_id] = min(3, val); save_ranks()
+            await update.message.reply_text(f"⭐ {msg.from_user.first_name} теперь ранг {user_ranks[target_id]}")
+        except: pass
+        return
 
-    gid = str(update.message.message_id)
+    # МОДЕРАЦИЯ
+    if caller_rank < 1 or (target_rank >= caller_rank and user.id != OWNER_ID): return
 
-    roulette_games[gid] = {
-        "p1": p1.id,
-        "p2": p2.id,
-        "lives": {p1.id: 2, p2.id: 2},
-        "turn": p1.id
-    }
+    try:
+        if cmd_parts[0] == "молчи":
+            m = int(cmd_parts[1]) if len(cmd_parts) > 1 and cmd_parts[1].isdigit() else 60
+            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(minutes=m))
+            await update.message.reply_text(f"🔇 {msg.from_user.first_name} в муте на {m} мин.")
+        elif cmd_parts[0] == "скажи":
+            await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages":True, "can_send_other_messages":True, "can_add_web_page_previews":True})
+            await update.message.reply_text(f"🔊 {msg.from_user.first_name} размучен.")
+        elif cmd_parts[0] == "бан":
+            await context.bot.ban_chat_member(update.effective_chat.id, target_id)
+            await update.message.reply_text(f"🚫 {msg.from_user.first_name} забанен.")
+        elif cmd_parts[0] == "варн":
+            warns[target_id] = warns.get(target_id, 0) + 1
+            if warns[target_id] >= 3:
+                warns[target_id] = 0
+                await context.bot.restrict_chat_member(update.effective_chat.id, target_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(minutes=30))
+                await update.message.reply_text(f"🛑 3/3 варна! {msg.from_user.first_name} в муте на 30м.")
+            else:
+                await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[target_id]}/3")
+    except: pass
 
-    reload_chamber(roulette_games[gid])
-
-    kb = [[
-        InlineKeyboardButton("Принять", callback_data=f"accept_{gid}"),
-        InlineKeyboardButton("Отклонить", callback_data=f"decline_{gid}")
-    ]]
-
-    await update.message.reply_text(
-        f"{p2.first_name}, тебе вызов!",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+# --- РУЛЕТКА ---
+async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.reply_to_message
+    if not msg or update.effective_user.id == msg.from_user.id:
+        return await update.message.reply_text("Ответь на сообщение противника!")
+    
+    g_id = str(update.message.message_id)
+    p1, p2 = update.effective_user, msg.from_user
+    roulette_games[g_id] = {"p1": p1.id, "p1_n": p1.first_name, "p2": p2.id, "p2_n": p2.first_name, "lives": {p1.id: 2, p2.id: 2}, "turn": p2.id, "mode": None}
+    reload_chamber(roulette_games[g_id])
+    
+    text = (f"⚠️ **ПРАВИЛА ДУЭЛИ** ⚠️\nВ барабане 6 патронов ({roulette_games[g_id]['info']}).\n"
+            f"У каждого по **2 ❤️**.\nХолостой в себя = доп. ход.\n\n👊 {p2.first_name}, выбирай ставку:")
+    kb = [[InlineKeyboardButton("Варн", callback_data=f"set_warn_{g_id}"),
+           InlineKeyboardButton("Мут (10м)", callback_data=f"set_mute_{g_id}"),
+           InlineKeyboardButton("Бан (1д)", callback_data=f"set_ban_{g_id}")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def roulette_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data.split("_")
+    if len(data) < 3: return
+    action, val, g_id = data[0], data[1], data[2]
+    
+    if g_id not in roulette_games: return await query.answer("Игра окончена.")
+    g = roulette_games[g_id]
+    u_id = query.from_user.id
+    if u_id not in [g['p1'], g['p2']]: return await query.answer("Это не ваша дуэль!", show_alert=True)
 
-    action = data[0]
-    gid = data[1]
-
-    if gid not in roulette_games:
-        return
-
-    game = roulette_games[gid]
-    uid = query.from_user.id
-
-    if action == "accept":
-        if uid != game["p2"]:
-            return await query.answer("Не твоя кнопка")
-
-        kb = [[
-            InlineKeyboardButton("В себя", callback_data=f"shoot_self_{gid}"),
-            InlineKeyboardButton("В него", callback_data=f"shoot_opp_{gid}")
-        ]]
-
-        await query.edit_message_text("Игра началась!", reply_markup=InlineKeyboardMarkup(kb))
-
+    if action == "set":
+        if u_id != g['p2']: return await query.answer("Выбирает тот, кого вызвали!")
+        g['mode'] = val
+        await update_roulette_msg(query, g, g_id)
+    elif action == "mercy":
+        await query.edit_message_text(f"🤝 {query.from_user.first_name} пощадил соперника. Игра окончена!")
+        del roulette_games[g_id]
     elif action == "shoot":
-        target = data[1]
-        gid = data[2]
-
-        game = roulette_games[gid]
-
-        if uid != game["turn"]:
-            return
-
-        bullet = game["chamber"].pop(0)
-
-        if target == "self":
-            victim = uid
+        if u_id != g['turn']: return await query.answer("Не твой ход!")
+        if not g['chamber']: reload_chamber(g)
+        bullet = g['chamber'].pop(0)
+        target, res = val, ""
+        if target == 'self':
+            if bullet:
+                g['lives'][u_id] -= 1; res = "💥 БАХ! Попал в себя!"
+                g['turn'] = g['p2'] if u_id == g['p1'] else g['p1']
+            else: res = "💨 Холостой! Доп. ход!"
         else:
-            victim = game["p2"] if uid == game["p1"] else game["p1"]
+            opp_id = g['p2'] if u_id == g['p1'] else g['p1']
+            if bullet:
+                g['lives'][opp_id] -= 1; res = f"💥 БАХ! Попадание!"
+            else: res = "💨 Холостой... Промах."
+            g['turn'] = opp_id
 
-        if bullet:
-            game["lives"][victim] -= 1
-            text = "💥 Попал!"
+        if any(l <= 0 for l in g['lives'].values()):
+            dead_id = next(uid for uid, l in g['lives'].items() if l <= 0)
+            await finish_roulette(query, g, dead_id, context)
+            if g_id in roulette_games: del roulette_games[g_id]
         else:
-            text = "💨 Холостой"
+            if not g['chamber']: reload_chamber(g); res += "\n🔄 Перезарядка!"
+            await update_roulette_msg(query, g, g_id, res)
 
-        if game["lives"][victim] <= 0:
-            await query.edit_message_text("💀 Игра окончена")
-            del roulette_games[gid]
-            return
+async def update_roulette_msg(query, g, g_id, last=""):
+    t_name = g['p1_n'] if g['turn'] == g['p1'] else g['p2_n']
+    text = (f"{last}\n\n👤 {g['p1_n']}: {'❤️' * g['lives'][g['p1']]}\n👤 {g['p2_n']}: {'❤️' * g['lives'][g['p2']]}\n"
+            f"🔋 Ствол: {len(g['chamber'])} ({g['info']})\n\n👉 Ходит: **{t_name}**")
+    kb = [[InlineKeyboardButton("🎯 В противника", callback_data=f"shoot_opp_{g_id}"),
+           InlineKeyboardButton("🔫 В себя", callback_data=f"shoot_self_{g_id}")]]
+    if any(l == 1 for l in g['lives'].values()):
+        kb.append([InlineKeyboardButton("🤝 Пощадить", callback_data=f"mercy_0_{g_id}")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-        game["turn"] = game["p2"] if uid == game["p1"] else game["p1"]
+async def finish_roulette(query, g, l_id, context):
+    l_name = g['p1_n'] if l_id == g['p1'] else g['p2_n']
+    mode, txt = g['mode'], f"💀 **{l_name} ПОГИБ!**\nНаказание: {g['mode'].capitalize()}"
+    try:
+        chat_id = query.message.chat_id
+        if mode == "mute": await context.bot.restrict_chat_member(chat_id, l_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(minutes=10))
+        elif mode == "ban": await context.bot.ban_chat_member(chat_id, l_id, until_date=datetime.now()+timedelta(days=1))
+        elif mode == "warn":
+            warns[l_id] = warns.get(l_id, 0) + 1
+            if warns[l_id] >= 3:
+                warns[l_id] = 0
+                await context.bot.restrict_chat_member(chat_id, l_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(days=1))
+                txt += "\n🛑 3/3 варна! Мут на 1 день!"
+    except: txt += "\n(Нет прав на наказание)"
+    await query.edit_message_text(txt, parse_mode="Markdown")
 
-        kb = [[
-            InlineKeyboardButton("В себя", callback_data=f"shoot_self_{gid}"),
-            InlineKeyboardButton("В него", callback_data=f"shoot_opp_{gid}")
-        ]]
-
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-
-# ================= ЗАПУСК =================
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_command))
-
-app.add_handler(MessageHandler(filters.Regex("^[Рр]улетка$"), roulette))
-app.add_handler(CallbackQueryHandler(roulette_callback))
-app.add_handler(CallbackQueryHandler(shop_callback, pattern="unmute"))
-
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-
-print("🚀 Бот запущен")
-app.run_polling()
+# --- ЗАПУСК ---
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_command))
+    app.add_handler(CallbackQueryHandler(roulette_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    print("🚀 Бот запущен!")
+    app.run_polling()
