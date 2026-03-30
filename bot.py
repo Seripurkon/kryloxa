@@ -19,14 +19,15 @@ def load_json(filename, default):
             with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return {int(k): v for k, v in data.items()}
-        except: pass
+        except:
+            return default
     return default
 
 def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# Инициализация баз данных
+# Инициализация данных
 user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, FRIEND_ID: 3})
 user_balance = load_json(ECONOMY_FILE, {})
 warns = {}
@@ -55,12 +56,13 @@ def reload_chamber(g):
     g['chamber'] = chamber
     g['info'] = f"Боевых: {live}, Холостых: {6 - live}"
 
-# --- КОМАНДЫ ПРЯМОГО ВЫЗОВА (/) ---
+# --- КОМАНДЫ (СЛЭШ) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Исправлено: экранируем нижнее подчеркивание для Markdown
     await update.message.reply_text(
         "👋 Привет! Я **Kryloxa Bot**.\n"
         "Валюта чата: **KLC** 🪙\n"
-        "Мой канал: @kryloxa_offcial\n"
+        "Мой канал: @kryloxa\_offcial\n"
         "Помощь: /help", parse_mode="Markdown"
     )
 
@@ -92,7 +94,7 @@ async def send_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     shop_msg = (
         f"👋 Здравствуйте, {user.first_name}!\n"
-        f"🛍 **Kryloxa Shop**\n"
+        f"🛍 **Добро пожаловать в Kryloxa Shop!**\n"
         "————————————————\n"
         f"💰 Твой баланс: `{bal}` KLC\n"
         "————————————————\n"
@@ -115,7 +117,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     msg = update.message.reply_to_message
     
-    # Счётчик сообщений (ТП)
+    # Счётчик сообщений для ТОПа
     if user.id not in daily_stats:
         daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
@@ -130,8 +132,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = bonus_timers.get(user.id)
         if last and now < last + timedelta(days=1):
             rem = (last + timedelta(days=1)) - now
-            h = int(rem.total_seconds() // 3600)
-            m = int((rem.total_seconds() % 3600) // 60)
+            h, m = int(rem.total_seconds() // 3600), int((rem.total_seconds() % 3600) // 60)
             return await update.message.reply_text(f"⏳ Приходи через {h}ч {m}м!")
         
         amt = random.randint(150, 500)
@@ -165,7 +166,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = f"👤 **Профиль:**\n⭐ Ранг: {get_rank(user.id)}\n💰 Баланс: {user_balance.get(user.id, 0)} KLC\n⚠️ Варны: {warns.get(user.id, 0)}/3"
         return await update.message.reply_text(res, parse_mode="Markdown")
 
-    # --- КОМАНДЫ ОТВЕТОМ (МОДЕРАЦИЯ И ИНФА) ---
+    # --- КОМАНДЫ ОТВЕТОМ ---
     if msg:
         target_id = msg.from_user.id
         caller_rank = get_rank(user.id)
@@ -188,7 +189,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"🔊 {msg.from_user.first_name} снова в эфире!")
             elif text == "бан":
                 await context.bot.ban_chat_member(chat_id, target_id)
-                await update.message.reply_text(f"🚪 {msg.from_user.first_name} исключен из чата.")
+                await update.message.reply_text(f"🚪 {msg.from_user.first_name} исключен.")
             elif text == "варн":
                 warns[target_id] = warns.get(target_id, 0) + 1
                 if warns[target_id] >= 3:
@@ -198,11 +199,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[target_id]}/3")
 
-# --- РУЛЕТКА (ПОЛНАЯ ЛОГИКА) ---
+# --- ЛОГИКА РУЛЕТКИ ---
 async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
     if not msg or update.effective_user.id == msg.from_user.id:
-        return await update.message.reply_text("Чтобы начать дуэль, ответь на сообщение противника!")
+        return await update.message.reply_text("Ответь на сообщение противника!")
     
     g_id = str(update.message.message_id)
     p1, p2 = update.effective_user, msg.from_user
@@ -210,7 +211,7 @@ async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reload_chamber(roulette_games[g_id])
     
     kb = [[InlineKeyboardButton("🎯 Принять вызов", callback_data=f"start_game_{g_id}")]]
-    await update.message.reply_text(f"👊 {p2.first_name}, тебя вызвали на дуэль! Ставка: Мут. Принимаешь?", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"👊 {p2.first_name}, тебя вызвали на дуэль! Принимаешь?", reply_markup=InlineKeyboardMarkup(kb))
 
 # --- ОБРАБОТЧИК КНОПОК ---
 async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,37 +221,35 @@ async def universal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     uid = query.from_user.id
 
     if action == "shop":
-        if uid != int(gid): return await query.answer("Это не твоё меню!")
+        if uid != int(gid): return await query.answer("Это не ваше меню магазина!", show_alert=True)
         bal = user_balance.get(uid, 0)
         if val == "mute":
-            if bal < 1000: return await query.answer("Недостаточно KLC!")
+            if bal < 1000: return await query.answer("Недостаточно KLC!", show_alert=True)
             await context.bot.restrict_chat_member(query.message.chat_id, uid, permissions={"can_send_messages":True, "can_send_other_messages":True, "can_add_web_page_previews":True})
             user_balance[uid] -= 1000
             save_json(ECONOMY_FILE, user_balance)
-            await query.edit_message_text("🕊 Размут куплен!")
+            await query.edit_message_text("🕊 Вы купили размут!")
         elif val == "warn":
-            if bal < 500 or warns.get(uid, 0) <= 0: return await query.answer("Ошибка!")
+            if bal < 500 or warns.get(uid, 0) <= 0: return await query.answer("Ошибка или 0 варнов!", show_alert=True)
             user_balance[uid] -= 500
             warns[uid] -= 1
             save_json(ECONOMY_FILE, user_balance)
-            await query.edit_message_text("⚠️ Варн снят!")
+            await query.edit_message_text("⚠️ Один варн снят!")
 
     elif action == "start":
-        # Здесь можно добавить полную логику стрельбы, если хочешь расширить
-        await query.edit_message_text("🔫 Дуэль началась! Стреляйте командой 'Рулетка' (или добавь кнопки стрельбы)")
+        await query.edit_message_text("🔫 Дуэль началась! (Здесь будет логика стрельбы)")
 
+# --- ЗАПУСК ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Регистрация команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("magaz", send_shop))
     
-    # Обработчики
     app.add_handler(CallbackQueryHandler(universal_callback))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    print("🚀 Kryloxa Bot запущен!")
+    print("🚀 Kryloxa Bot запущен и исправлен!")
     app.run_polling()
