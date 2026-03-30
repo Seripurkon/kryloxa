@@ -4,6 +4,7 @@ import random
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Chat
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
+from telegram.request import HTTPXRequest
 
 # --- КОНФИГ ---
 TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
@@ -11,7 +12,7 @@ OWNER_ID = 5679520675
 RANKS_FILE = "ranks.json"
 ECONOMY_FILE = "economy.json"
 
-# --- ХРАНИЛИЩЕ ---
+# --- СИСТЕМА ХРАНЕНИЯ ---
 def load_json(filename, default):
     if os.path.exists(filename):
         try:
@@ -53,7 +54,7 @@ def reload_chamber(g):
 
 # --- КОМАНДЫ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 **Kryloxa Bot** запущен! Напиши /help для списка команд.", parse_mode="Markdown")
+    await update.message.reply_text("👋 **Kryloxa Bot** запущен и готов к работе!\nНапиши /help для списка всех команд.", parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rank = get_rank(update.effective_user.id)
@@ -64,7 +65,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Обо мне — инфо о себе\n"
         "ТП — топ общительных за день\n"
         "Рулетка — дуэль (ответом)\n"
-        "Магазин (или /magaz) — лавка KLC\n\n"
+        "Магазин — лавка KLC\n\n"
         "🛠 **Модерация (ответом):**\n"
         "Молчи [время] — мут (напр. 1 час)\n"
         "Скажи — размут\n"
@@ -77,7 +78,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n⭐ **Админка:**\nДать админку [1-3] (ответом)\nСнять админку (ответом)"
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА ---
+# --- ГЛАВНЫЙ ОБРАБОТЧИК ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     check_daily_reset()
@@ -86,29 +87,29 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     msg = update.message.reply_to_message
 
-    # ТП (счётчик)
+    # Счётчик ТП
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
-    # Простые команды
-    if text in ["магазин", "/magaz"]:
+    # Команды экономики
+    if text == "магазин":
         bal = user_balance.get(user.id, 0)
-        kb = [[InlineKeyboardButton("🕊 Снять мут (1000 KLC)", callback_data=f"shop_mute_{user.id}"),
-               InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data=f"shop_warn_{user.id}")]]
+        kb = [[InlineKeyboardButton("🕊 Снять мут (1000 KLC)", callback_data=f"shop_m_{user.id}"),
+               InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data=f"shop_w_{user.id}")]]
         return await update.message.reply_text(f"🛍 **Kryloxa Shop**\n💰 Баланс: `{bal}` KLC", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
     if text == "бонус":
         now = datetime.now()
         if bonus_timers.get(user.id) and now < bonus_timers[user.id] + timedelta(days=1):
-            return await update.message.reply_text("⏳ Бонус можно брать раз в сутки!")
+            return await update.message.reply_text("❌ Бонус доступен раз в 24 часа!")
         amt = random.randint(150, 500)
         user_balance[user.id] = user_balance.get(user.id, 0) + amt
         bonus_timers[user.id] = now
         save_json(ECONOMY_FILE, user_balance)
-        return await update.message.reply_text(f"💰 +{amt} KLC! Баланс: {user_balance[user.id]}")
+        return await update.message.reply_text(f"🎁 Бонус: +{amt} KLC!")
 
     if text in ["баланс", "б"]:
-        return await update.message.reply_text(f"💰 Баланс: {user_balance.get(user.id, 0)} KLC")
+        return await update.message.reply_text(f"💰 Баланс {user.first_name}: {user_balance.get(user.id, 0)} KLC")
 
     if text == "тп":
         top = sorted(daily_stats.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
@@ -117,7 +118,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "обо мне":
         r = get_rank(user.id)
-        return await update.message.reply_text(f"👤 {user.first_name}\n⭐ Ранг: {r}\n💰 Баланс: {user_balance.get(user.id, 0)}")
+        return await update.message.reply_text(f"👤 **Профиль:**\n⭐ Ранг: {r}\n💰 Баланс: {user_balance.get(user.id, 0)}\n⚠️ Варны: {warns.get(user.id, 0)}/3")
 
     # Команды ответом
     if msg:
@@ -134,18 +135,26 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await update.message.reply_text(res)
 
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
-            if text.startswith("молчи"):
-                await context.bot.restrict_chat_member(chat_id, t_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(hours=1))
-                await update.message.reply_text(f"🔇 {msg.from_user.first_name} замолчал.")
-            elif text == "скажи":
-                await context.bot.restrict_chat_member(chat_id, t_id, permissions={"can_send_messages":True, "can_send_other_messages":True, "can_add_web_page_previews":True})
-                await update.message.reply_text(f"🔊 {msg.from_user.first_name} снова говорит.")
-            elif text == "варн":
-                warns[t_id] = warns.get(t_id, 0) + 1
-                await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[t_id]}/3")
-            elif text == "снять варн":
-                warns[t_id] = max(0, warns.get(t_id, 0) - 1)
-                await update.message.reply_text(f"✅ Варн снят. У {msg.from_user.first_name} теперь {warns[t_id]}/3")
+            try:
+                if text.startswith("молчи"):
+                    await context.bot.restrict_chat_member(chat_id, t_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(hours=1))
+                    await update.message.reply_text(f"🔇 {msg.from_user.first_name} замолчал.")
+                elif text == "скажи":
+                    await context.bot.restrict_chat_member(chat_id, t_id, permissions={"can_send_messages":True, "can_send_other_messages":True, "can_add_web_page_previews":True})
+                    await update.message.reply_text(f"🔊 {msg.from_user.first_name} снова говорит.")
+                elif text.startswith("бан"):
+                    await context.bot.ban_chat_member(chat_id, t_id)
+                    await update.message.reply_text(f"🚪 {msg.from_user.first_name} забанен.")
+                elif text == "разбан":
+                    await context.bot.unban_chat_member(chat_id, t_id)
+                    await update.message.reply_text(f"🔓 {msg.from_user.first_name} разбанен.")
+                elif text == "варн":
+                    warns[t_id] = warns.get(t_id, 0) + 1
+                    await update.message.reply_text(f"⚠️ Варн {msg.from_user.first_name}: {warns[t_id]}/3")
+                elif text == "снять варн":
+                    warns[t_id] = max(0, warns.get(t_id, 0) - 1)
+                    await update.message.reply_text(f"✅ Варн снят. У {msg.from_user.first_name} теперь {warns[t_id]}/3")
+            except: pass
 
         if user.id == OWNER_ID:
             if text.startswith("дать админку"):
@@ -166,10 +175,23 @@ async def roulette_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p1, p2 = update.effective_user, msg.from_user
     roulette_games[g_id] = {"p1": p1.id, "p1_n": p1.first_name, "p2": p2.id, "p2_n": p2.first_name, "lives": {p1.id: 2, p2.id: 2}, "turn": p2.id}
     reload_chamber(roulette_games[g_id])
+    await update_roulette_ui(update.message, g_id, "Дуэль началась!")
+
+async def update_roulette_ui(message, g_id, status_text):
+    g = roulette_games[g_id]
+    turn_name = g['p1_n'] if g['turn'] == g['p1'] else g['p2_n']
+    text = (f"{status_text}\n\n"
+            f"👤 {g['p1_n']}: {'❤️' * g['lives'][g['p1']]}\n"
+            f"👤 {g['p2_n']}: {'❤️' * g['lives'][g['p2']]}\n"
+            f"🔋 Ствол: {len(g['chamber'])} (Боевых: {g['live_count']}, Холостых: {g['blank_count']})\n\n"
+            f"👉 Ходит: {turn_name}")
+    kb = [[InlineKeyboardButton("🎯 В противника", callback_data=f"rt_opp_{g_id}"),
+           InlineKeyboardButton("🔫 В себя", callback_data=f"rt_self_{g_id}")]]
+    if 1 in g['lives'].values():
+        kb.append([InlineKeyboardButton("🤝 Пощадить", callback_data=f"rt_mercy_{g_id}")])
     
-    text = (f"👤 {p1.first_name}: ❤️❤️\n👤 {p2.first_name}: ❤️❤️\n🔋 Ствол: 6 (Боевых: {roulette_games[g_id]['live_count']})\n\n👉 Ходит: {p2.first_name}")
-    kb = [[InlineKeyboardButton("🎯 В противника", callback_data=f"rt_opp_{g_id}"), InlineKeyboardButton("🔫 В себя", callback_data=f"rt_self_{g_id}")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    if message.reply_markup: await message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    else: await message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def rt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -183,36 +205,38 @@ async def rt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: g['blank_count'] -= 1
     
     res_text = ""
+    if action == "mercy":
+        await query.edit_message_text(f"🤝 {query.from_user.first_name} пощадил соперника. Мир!"); del roulette_games[g_id]; return
+
     if action == "opp":
         opp = g['p2'] if g['turn'] == g['p1'] else g['p1']
         if bullet: g['lives'][opp] -= 1; res_text = "💥 БАХ! Попадание!"
         else: res_text = "💨 Холостой..."
         g['turn'] = opp
-    elif action == "self":
-        if bullet: g['lives'][g['turn']] -= 1; res_text = "💥 БАХ! Самострел..."; g['turn'] = g['p2'] if g['turn'] == g['p1'] else g['p1']
-        else: res_text = "💨 Холостой! Доп. ход!"
-    elif action == "mercy":
-        await query.edit_message_text(f"🤝 {query.from_user.first_name} пощадил соперника."); del roulette_games[g_id]; return
-
+    else: # В себя
+        if bullet:
+            g['lives'][g['turn']] -= 1; res_text = "💥 БАХ! Самострел..."
+            g['turn'] = g['p2'] if g['turn'] == g['p1'] else g['p1']
+        else:
+            res_text = "💨 Холостой! Доп. ход!"
+    
     if any(l <= 0 for l in g['lives'].values()):
         winner = g['p1_n'] if g['lives'][g['p2']] <= 0 else g['p2_n']
         await query.edit_message_text(f"{res_text}\n\n🏆 Победил {winner}!"); del roulette_games[g_id]
     else:
         if not g['chamber']: reload_chamber(g)
-        turn_name = g['p1_n'] if g['turn'] == g['p1'] else g['p2_n']
-        text = (f"{res_text}\n\n👤 {g['p1_n']}: {'❤️' * g['lives'][g['p1']]}\n👤 {g['p2_n']}: {'❤️' * g['lives'][g['p2']]}\n"
-                f"🔋 Ствол: {len(g['chamber'])} (Боевых: {g['live_count']}, Холостых: {g['blank_count']})\n\n👉 Ходит: {turn_name}")
-        kb = [[InlineKeyboardButton("🎯 В противника", callback_data=f"rt_opp_{g_id}"), InlineKeyboardButton("🔫 В себя", callback_data=f"rt_self_{g_id}")]]
-        if 1 in g['lives'].values(): kb.append([InlineKeyboardButton("🤝 Пощадить", callback_data=f"rt_mercy_{g_id}")])
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        await update_roulette_ui(query.message, g_id, res_text)
 
 # --- ЗАПУСК ---
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
+    t_request = HTTPXRequest(connect_timeout=60, read_timeout=60)
+    app = ApplicationBuilder().token(TOKEN).request(t_request).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(rt_callback, pattern="^rt_"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    print("🚀 Бот запущен!")
-    app.run_polling()
+    
+    print("🚀 Бот запущен в Амстердаме!")
+    app.run_polling(drop_pending_updates=True)
