@@ -45,27 +45,9 @@ def reload_chamber(g):
     random.shuffle(chamber)
     g['chamber'] = chamber
 
-# --- КОМАНДЫ ---
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Бот запущен! Напиши /help для списка команд.")
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📜 **СПИСОК КОМАНД**\n\n"
-        "🕹 **Команды:** /start, /help, /magaz, /me (или /обо_мне)\n"
-        "💰 **Экономика:** баланс (б), бонус, тп\n"
-        "🛡 **Модер:** инфа, молчи, скажи, варн (ответом)\n"
-        "🎲 **Игра:** Рулетка (ответом на сообщение)"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-# --- ПРОФИЛЬ (ОБО МНЕ / ИНФА) ---
-async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Если команда вызвана ответом на сообщение — смотрим цель, иначе — себя
-    msg = update.message.reply_to_message
-    user = msg.from_user if msg else update.effective_user
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ПРОФИЛЯ ---
+async def show_profile(update: Update, user):
     u_id = user.id
-    
     text = (
         f"👤 **Профиль пользователя {user.first_name}:**\n"
         f"🆔 ID: `{u_id}`\n"
@@ -75,14 +57,26 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- МАГАЗИН ---
+# --- КОМАНДЫ (СЛЕШ) ---
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Бот запущен! Напиши /help для списка команд.")
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📜 **СПИСОК КОМАНД**\n\n"
+        "🕹 **Меню:** /start, /help, /magaz\n"
+        "💰 **Экономика:** баланс (б), бонус, тп, обо мне\n"
+        "🛡 **Модер:** инфа, молчи, скажи, варн (ответом)\n"
+        "🎲 **Игра:** Рулетка (ответом на сообщение)"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
 async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bal = user_balance.get(user.id, 0)
     text = (
         f"🛒 **Добро пожаловать в Kryloxa Shop!**\n"
         f"👋 Здравствуйте, {user.first_name}!\n\n"
-        f"Ниже вы можете выбрать доступные функции магазина.\n"
         f"💰 Твой баланс: {bal} KLC\n"
         f"Выберите услугу:"
     )
@@ -115,12 +109,13 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else: await q.answer("❌ У вас нет варнов.")
         else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
 
-# --- ТЕКСТОВЫЙ ОБРАБОТЧИК ---
+# --- ТЕКСТОВЫЙ ОБРАБОТЧИК (ОСНОВНАЯ ЛОГИКА) ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     text = update.message.text.strip().lower()
     user, chat_id, msg = update.effective_user, update.effective_chat.id, update.message.reply_to_message
 
+    # Статистика ТП
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
@@ -131,6 +126,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res += f"{i}. {data['name']} — {data['count']} сообщ.\n"
         return await update.message.reply_text(res, parse_mode="Markdown")
 
+    # Команда "обо мне"
+    if text == "обо мне":
+        return await show_profile(update, user)
+
+    # Экономика
     if text in ["баланс", "б"]:
         await update.message.reply_text(f"💰 Баланс {user.first_name}: {user_balance.get(user.id, 0)} KLC")
     elif text == "бонус":
@@ -143,11 +143,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_json(ECONOMY_FILE, user_balance)
         await update.message.reply_text(f"🎁 +{amt} KLC!")
 
+    # Модерация и "инфа" (через reply)
     if msg:
         t_id = msg.from_user.id
         c_rank, t_rank = get_rank(user.id), get_rank(t_id)
+        
         if text == "инфа":
-            await update.message.reply_text(f"👤 {msg.from_user.first_name}\n⭐ Ранг: {t_rank}\n💰 Баланс: {user_balance.get(t_id, 0)}\n⚠️ Варны: {warns.get(t_id, 0)}/3")
+            return await show_profile(update, msg.from_user)
+            
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
             try:
                 if text == "молчи":
@@ -171,7 +174,7 @@ async def roulette_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (f"🎲 **ДУЭЛЬ!**\n\n👤 {p1.first_name} VS {p2.first_name}\n🔫 В дробовике: 6 патронов (3🔥/3❄️)\n\n👉 {p2.first_name}, выбирай ставку:")
     kb = [
         [InlineKeyboardButton("Варн", callback_data=f"rbet_warn_{g_id}"), InlineKeyboardButton("Мут", callback_data=f"rbet_mute_{g_id}")],
-        [InlineKeyboardButton("Бан", callback_data=f"rbet_ban_{g_id}"), InlineKeyboardButton("100 KLC", callback_data=f"rbet_klc_{g_id}")]
+        [InlineKeyboardButton("Бан (1 день)", callback_data=f"rbet_ban_{g_id}"), InlineKeyboardButton("100 KLC", callback_data=f"rbet_klc_{g_id}")]
     ]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
@@ -209,8 +212,7 @@ async def rt_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if any(l <= 0 for l in g['lives'].values()):
         winner_id = g['p1'] if g['lives'][g['p2']] <= 0 else g['p2']
         loser_id = g['p2'] if winner_id == g['p1'] else g['p1']
-        w_name = g['p1_n'] if winner_id == g['p1'] else g['p2_n']
-        l_name = g['p2_n'] if winner_id == g['p1'] else g['p1_n']
+        w_name, l_name = (g['p1_n'], g['p2_n']) if winner_id == g['p1'] else (g['p2_n'], g['p1_n'])
         bet = g['bet_type']
         punish_msg = ""
         try:
@@ -240,8 +242,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("magaz", magaz_cmd))
-    app.add_handler(CommandHandler("me", info_cmd))
-    app.add_handler(CommandHandler("обо_мне", info_cmd))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern="^buy_"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_start))
     app.add_handler(CallbackQueryHandler(rt_bet_callback, pattern="^rbet_"))
