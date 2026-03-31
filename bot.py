@@ -109,13 +109,12 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else: await q.answer("❌ У вас нет варнов.")
         else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
 
-# --- ТЕКСТОВЫЙ ОБРАБОТЧИК (ОСНОВНАЯ ЛОГИКА) ---
+# --- ТЕКСТОВЫЙ ОБРАБОТЧИК (БЕЗ СЛЕШЕЙ) ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     text = update.message.text.strip().lower()
     user, chat_id, msg = update.effective_user, update.effective_chat.id, update.message.reply_to_message
 
-    # Статистика ТП
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
@@ -126,11 +125,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res += f"{i}. {data['name']} — {data['count']} сообщ.\n"
         return await update.message.reply_text(res, parse_mode="Markdown")
 
-    # Команда "обо мне"
     if text == "обо мне":
         return await show_profile(update, user)
 
-    # Экономика
     if text in ["баланс", "б"]:
         await update.message.reply_text(f"💰 Баланс {user.first_name}: {user_balance.get(user.id, 0)} KLC")
     elif text == "бонус":
@@ -143,14 +140,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_json(ECONOMY_FILE, user_balance)
         await update.message.reply_text(f"🎁 +{amt} KLC!")
 
-    # Модерация и "инфа" (через reply)
     if msg:
         t_id = msg.from_user.id
         c_rank, t_rank = get_rank(user.id), get_rank(t_id)
-        
         if text == "инфа":
             return await show_profile(update, msg.from_user)
-            
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
             try:
                 if text == "молчи":
@@ -189,8 +183,8 @@ async def rt_bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def update_ui(q, g_id, status):
     g = roulette_games[g_id]
     t_n = g['p1_n'] if g['turn'] == g['p1'] else g['p2_n']
-    l, b = g['chamber'].count(True), g['chamber'].count(False)
-    txt = (f"🎰 Ставка: {g['bet_type'].upper()}\n🔫 Патроны: {len(g['chamber'])} (🔥 {l} | ❄️ {b})\n\n📢 {status}\n👤 {g['p1_n']}: {'❤️'*g['lives'][g['p1']]}\n👤 {g['p2_n']}: {'❤️'*g['lives'][g['p2']]}\n👉 Ход: {t_n}")
+    l, bl = g['chamber'].count(True), g['chamber'].count(False)
+    txt = (f"🎰 Ставка: {g['bet_type'].upper()}\n🔫 Патроны: {len(g['chamber'])} (🔥 {l} | ❄️ {bl})\n\n📢 {status}\n👤 {g['p1_n']}: {'❤️'*g['lives'][g['p1']]}\n👤 {g['p2_n']}: {'❤️'*g['lives'][g['p2']]}\n👉 Ход: {t_n}")
     kb = [[InlineKeyboardButton("🎯 Оппонент", callback_data=f"rt_opp_{g_id}"), InlineKeyboardButton("🔫 Себя", callback_data=f"rt_self_{g_id}")]]
     await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
 
