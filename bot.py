@@ -45,7 +45,7 @@ def reload_chamber(g):
     random.shuffle(chamber)
     g['chamber'] = chamber
 
-# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ПРОФИЛЯ ---
+# --- ФУНКЦИЯ ПРОФИЛЯ ---
 async def show_profile(update: Update, user):
     u_id = user.id
     text = (
@@ -80,10 +80,8 @@ async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Твой баланс: {bal} KLC\n"
         f"Выберите услугу:"
     )
-    kb = [
-        [InlineKeyboardButton("🚫 Снять мут (1000 KLC)", callback_data="buy_unmute")],
-        [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]
-    ]
+    kb = [[InlineKeyboardButton("🚫 Снять мут (1000 KLC)", callback_data="buy_unmute")],
+          [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,7 +107,7 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else: await q.answer("❌ У вас нет варнов.")
         else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
 
-# --- ТЕКСТОВЫЙ ОБРАБОТЧИК (БЕЗ СЛЕШЕЙ) ---
+# --- ТЕКСТОВЫЙ ОБРАБОТЧИК ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     text = update.message.text.strip().lower()
@@ -118,6 +116,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
+    # Команды БЕЗ слэша
     if text == "тп":
         top_list = sorted(daily_stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10]
         res = "📊 **ТОП ОБЩИТЕЛЬНЫХ:**\n\n"
@@ -166,10 +165,8 @@ async def roulette_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     g_id = f"{p1.id}_{p2.id}_{random.randint(100,999)}"
     roulette_games[g_id] = {"p1": p1.id, "p1_n": p1.first_name, "p2": p2.id, "p2_n": p2.first_name, "lives": {p1.id: 2, p2.id: 2}, "turn": p2.id, "bet_type": None}
     text = (f"🎲 **ДУЭЛЬ!**\n\n👤 {p1.first_name} VS {p2.first_name}\n🔫 В дробовике: 6 патронов (3🔥/3❄️)\n\n👉 {p2.first_name}, выбирай ставку:")
-    kb = [
-        [InlineKeyboardButton("Варн", callback_data=f"rbet_warn_{g_id}"), InlineKeyboardButton("Мут", callback_data=f"rbet_mute_{g_id}")],
-        [InlineKeyboardButton("Бан (1 день)", callback_data=f"rbet_ban_{g_id}"), InlineKeyboardButton("100 KLC", callback_data=f"rbet_klc_{g_id}")]
-    ]
+    kb = [[InlineKeyboardButton("Варн", callback_data=f"rbet_warn_{g_id}"), InlineKeyboardButton("Мут", callback_data=f"rbet_mute_{g_id}")],
+          [InlineKeyboardButton("Бан (1 день)", callback_data=f"rbet_ban_{g_id}"), InlineKeyboardButton("100 KLC", callback_data=f"rbet_klc_{g_id}")]]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def rt_bet_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,23 +204,22 @@ async def rt_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         winner_id = g['p1'] if g['lives'][g['p2']] <= 0 else g['p2']
         loser_id = g['p2'] if winner_id == g['p1'] else g['p1']
         w_name, l_name = (g['p1_n'], g['p2_n']) if winner_id == g['p1'] else (g['p2_n'], g['p1_n'])
-        bet = g['bet_type']
-        punish_msg = ""
+        bet, punish_msg = g['bet_type'], ""
         try:
             if bet == "warn":
                 warns[loser_id] = warns.get(loser_id, 0) + 1
                 punish_msg = f"⚠️ {l_name} проигрывает и получает **ВАРН**!"
             elif bet == "mute":
                 await context.bot.restrict_chat_member(q.message.chat_id, loser_id, permissions={"can_send_messages":False}, until_date=datetime.now()+timedelta(hours=1))
-                punish_msg = f"🤫 {l_name} проигрывает и отправляется в **МУТ** на час!"
+                punish_msg = f"🤫 {l_name} отправляется в **МУТ** на час!"
             elif bet == "ban":
                 await context.bot.ban_chat_member(q.message.chat_id, loser_id, until_date=datetime.now()+timedelta(days=1))
-                punish_msg = f"🚫 {l_name} проиграл и **ЗАБАНЕН** на 1 день!"
+                punish_msg = f"🚫 {l_name} **ЗАБАНЕН** на 1 день!"
             elif bet == "klc":
                 user_balance[loser_id] = user_balance.get(loser_id, 0) - 100
                 user_balance[winner_id] = user_balance.get(winner_id, 0) + 100
                 save_json(ECONOMY_FILE, user_balance)
-                punish_msg = f"💰 {l_name} теряет 100 KLC, а {w_name} их забирает себе!"
+                punish_msg = f"💰 {l_name} теряет 100 KLC, а {w_name} забирает их!"
         except: punish_msg = "⚠️ Ошибка прав админа."
         await q.edit_message_text(f"{msg}\n\n🏆 **Победил {w_name}!**\n{punish_msg}", parse_mode="Markdown")
         del roulette_games[g_id]
@@ -231,6 +227,7 @@ async def rt_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not g['chamber']: reload_chamber(g)
         await update_ui(q, g_id, msg)
 
+# --- ЗАПУСК (ТУТ НЕТ РУССКИХ КОМАНД!) ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=20)).build()
     app.add_handler(CommandHandler("start", start_cmd))
