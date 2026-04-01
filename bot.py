@@ -8,7 +8,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from telegram.request import HTTPXRequest
 
 # --- НАСТРОЙКИ ---
-TOKEN = "8641381095:AAGLY3W93LQGfq_Ygm1OIfAMwlhb6SlQrXE"
+TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
 OWNER_ID = 5679520675 
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
