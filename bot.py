@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from telegram.request import HTTPXRequest
 
 # --- КОНФИГУРАЦИЯ ---
-TOKEN = "8548759774:AAGynBbPfNS58sE-HJf-TEZ4HNw50fQMZBw"
+TOKEN = "8548759774:AAGdsv1JThkVBonbFgYURkKFHvJP6juc8CE"
 OWNER_ID = 5679520675
 ECONOMY_FILE = "economy.json"
 WARNS_FILE = "warns.json"
