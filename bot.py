@@ -306,3 +306,4 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(rt_action_callback, pattern="^rt_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.run_polling(drop_pending_updates=True)
+    
