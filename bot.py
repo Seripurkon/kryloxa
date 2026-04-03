@@ -72,7 +72,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🕹 **Меню:** /start, /help, /magaz\n"
         "💰 **Экономика:** баланс (б), бонус, тп, обо мне\n"
         "💸 **Передача:** передать [сумма] (ответом)\n"
-        "🛡 **Модер:** инфа, молчи, скажи, варн (ответом + причина с новой строки)\n"
+        "🛡 **Модер:** инфа, молчи [время], скажи, варн (ответом + причина с новой строки)\n"
+        "👑 **Админ:** дать админку (ответом)\n"
         "🎲 **Игра:** Рулетка (ответом)"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -159,6 +160,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t_id = msg.from_user.id
         c_rank, t_rank = get_rank(user.id), get_rank(t_id)
 
+        # Выдача админки (Только для OWNER)
+        if first_line == "дать админку" and user.id == OWNER_ID:
+            user_ranks[t_id] = 3
+            save_json(RANKS_FILE, user_ranks)
+            return await update.message.reply_text(f"✅ Пользователь {msg.from_user.first_name} назначен Админом (Ранг 3)!")
+
         if first_line.startswith("передать"):
             try:
                 amount = int(first_line.split()[1])
@@ -174,15 +181,44 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if first_line == "инфа":
             return await show_profile(update, msg.from_user)
 
-        # МОДЕРАЦИЯ С ПРИЧИНАМИ
+        # МОДЕРАЦИЯ С ПРИЧИНАМИ И ВРЕМЕНЕМ
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
             try:
-                if first_line == "молчи":
-                    await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.now()+timedelta(hours=1))
-                    await update.message.reply_text(f"🤫 Тишина на час.\n📝 Причина: {reason}")
+                if first_line.startswith("молчи"):
+                    # Парсинг времени (например: "молчи 2 часа", "молчи 30 минут")
+                    args = first_line.split()[1:]
+                    delta = timedelta(hours=1) # По умолчанию 1 час
+                    time_str = "1 час"
+
+                    if args:
+                        try:
+                            amount = int(args[0])
+                            unit = args[1].lower() if len(args) > 1 else "ч"
+                            
+                            if unit.startswith("м"): # Минуты
+                                delta = timedelta(minutes=amount)
+                                time_str = f"{amount} минут(ы)"
+                            elif unit.startswith("д"): # Дни
+                                delta = timedelta(days=amount)
+                                time_str = f"{amount} дней"
+                            else: # Часы (по умолчанию если не указано)
+                                delta = timedelta(hours=amount)
+                                time_str = f"{amount} часов"
+                        except ValueError:
+                            pass # Если ввели не число, оставим 1 час
+
+                    await context.bot.restrict_chat_member(
+                        chat_id, 
+                        t_id, 
+                        permissions=ChatPermissions(can_send_messages=False), 
+                        until_date=datetime.now() + delta
+                    )
+                    await update.message.reply_text(f"🤫 Тишина на {time_str}.\n📝 Причина: {reason}")
+                
                 elif first_line == "скажи":
                     await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=True, can_send_other_messages=True, can_send_polls=True, can_send_media_messages=True))
                     await update.message.reply_text(f"🔊 Голос возвращен.\n📝 Причина: {reason}")
+                
                 elif first_line == "варн":
                     warns[t_id] = warns.get(t_id, 0) + 1
                     await update.message.reply_text(f"⚠️ Варн выдан ({warns[t_id]}/3)\n📝 Причина: {reason}")
