@@ -11,6 +11,7 @@ from telegram.request import HTTPXRequest
 TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
 OWNER_ID = 5679520675
 TESTER_ID = 782585931 #for testing purpose
+HELPER_ID = 8475300408
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
 BOT_VERSION = "0.9.6"
@@ -31,7 +32,7 @@ def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4})
+user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4, HELPER_ID: -1})
 user_balance = load_json(ECONOMY_FILE, {})
 warns = {}
 roulette_games = {}
@@ -49,16 +50,21 @@ def reload_chamber(g):
 
 # --- ФУНКЦИЯ ПРОФИЛЯ ---
 async def show_profile(update: Update, user):
+    rank = get_rank(u_id)
     u_id = user.id
     if u_id == OWNER_ID:
         bal_text = "∞ (Owner)"
+    elif u_id == HELPER_ID:
+        rank += " Tester"
+    elif u_id == TESTER_ID:
+        rank += " The Main Tester"
     else:
         bal_text = f"{user_balance.get(u_id, 0)} KLC"
     
     text = (
         f"👤 Профиль пользователя {user.first_name}:**\n"
         f"🆔 ID: `{u_id}`\n"
-        f"⭐️ Ранг: {get_rank(u_id)}\n"
+        f"⭐️ Ранг: {rank}\n"
         f"💰 Баланс: {bal_text}\n"
         f"⚠️ Варны: {warns.get(u_id, 0)}/3\n"
         f"────────────────\n"
