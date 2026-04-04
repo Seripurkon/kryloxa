@@ -31,7 +31,7 @@ def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4})
+user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4}, {TESTER_ID, 4})
 user_balance = load_json(ECONOMY_FILE, {})
 warns = {}
 roulette_games = {}
