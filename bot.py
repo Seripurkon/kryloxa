@@ -72,8 +72,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🕹 **Меню:** /start, /help, /magaz\n"
         "💰 **Экономика:** баланс (б), бонус, тп, обо мне\n"
         "💸 **Передача:** передать [сумма] (ответом)\n"
-        "🛡 **Модер:** инфа, молчи [время], скажи, варн (ответом + причина с новой строки)\n"
-        "👑 **Админ:** дать админку (ответом)\n"
+        "🛡 **Модер:** инфа, молчи [время], бан [время], варн, скажи, разбан, снять варн\n"
+        "👑 **Админ:** дать админку [1-3] (ответом)\n"
         "🎲 **Игра:** Рулетка (ответом)"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -121,9 +121,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     
     raw_text = update.message.text
-    # Разделяем на команду и причину (по переносу строки)
     parts = raw_text.split('\n', 1)
-    first_line = parts[0].strip().lower()
+    first_line_full = parts[0].strip().lower()
+    first_line_parts = first_line_full.split()
+    cmd = first_line_parts[0] if first_line_parts else ""
     reason = parts[1].strip() if len(parts) > 1 else "Не указана"
     
     user, chat_id, msg = update.effective_user, update.effective_chat.id, update.message.reply_to_message
@@ -131,21 +132,22 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
-    if first_line == "тп":
+    # Базовые команды
+    if first_line_full == "тп":
         top_list = sorted(daily_stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10]
         res = "📊 **ТОП ОБЩИТЕЛЬНЫХ:**\n\n"
         for i, (uid, data) in enumerate(top_list, 1):
             res += f"{i}. {data['name']} — {data['count']} сообщ.\n"
         return await update.message.reply_text(res, parse_mode="Markdown")
 
-    if first_line == "обо мне":
+    if first_line_full == "обо мне":
         return await show_profile(update, user)
 
-    if first_line in ["баланс", "б"]:
+    if first_line_full in ["баланс", "б"]:
         bal = "∞" if user.id == OWNER_ID else user_balance.get(user.id, 0)
         await update.message.reply_text(f"💰 Баланс {user.first_name}: {bal} KLC")
 
-    elif first_line == "бонус":
+    elif first_line_full == "бонус":
         now = datetime.now()
         if user.id in bonus_timers and now < bonus_timers[user.id] + timedelta(days=1):
             return await update.message.reply_text("❌ Бонус доступен раз в 24 часа!")
@@ -160,15 +162,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t_id = msg.from_user.id
         c_rank, t_rank = get_rank(user.id), get_rank(t_id)
 
-        # Выдача админки (Только для OWNER)
-        if first_line == "дать админку" and user.id == OWNER_ID:
-            user_ranks[t_id] = 3
-            save_json(RANKS_FILE, user_ranks)
-            return await update.message.reply_text(f"✅ Пользователь {msg.from_user.first_name} назначен Админом (Ранг 3)!")
-
-        if first_line.startswith("передать"):
+        # Выдача админки (РАНГИ 1-3)
+        if first_line_full.startswith("дать админку") and user.id == OWNER_ID:
             try:
-                amount = int(first_line.split()[1])
+                # Если указан ранг (например: дать админку 2)
+                r_val = int(first_line_parts[2]) if len(first_line_parts) > 2 else 3
+                if r_val < 1 or r_val > 3: r_val = 3
+                user_ranks[t_id] = r_val
+                save_json(RANKS_FILE, user_ranks)
+                return await update.message.reply_text(f"✅ Пользователь {msg.from_user.first_name} назначен Админом (Ранг {r_val})!")
+            except:
+                user_ranks[t_id] = 3
+                save_json(RANKS_FILE, user_ranks)
+                return await update.message.reply_text(f"✅ Пользователь {msg.from_user.first_name} назначен Админом (Ранг 3)!")
+
+        # ПЕРЕДАЧА KLC
+        if first_line_full.startswith("передать"):
+            try:
+                amount = int(first_line_parts[1])
                 if amount <= 0: return await update.message.reply_text("❌ Введи сумму больше 0")
                 if user.id != OWNER_ID and user_balance.get(user.id, 0) < amount:
                     return await update.message.reply_text("❌ Недостаточно KLC")
@@ -178,51 +189,56 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"✅ Передано {amount} KLC пользователю {msg.from_user.first_name}")
             except: await update.message.reply_text("❌ Формат: передать 100")
 
-        if first_line == "инфа":
+        if first_line_full == "инфа":
             return await show_profile(update, msg.from_user)
 
-        # МОДЕРАЦИЯ С ПРИЧИНАМИ И ВРЕМЕНЕМ
+        # --- МОДЕРАЦИЯ ---
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
             try:
-                if first_line.startswith("молчи"):
-                    # Парсинг времени (например: "молчи 2 часа", "молчи 30 минут")
-                    args = first_line.split()[1:]
-                    delta = timedelta(hours=1) # По умолчанию 1 час
-                    time_str = "1 час"
+                # ПАРСИНГ ВРЕМЕНИ ДЛЯ МУТА И БАНА
+                delta = timedelta(hours=1)
+                time_str = "1 час"
+                if len(first_line_parts) > 1:
+                    try:
+                        amt = int(first_line_parts[1])
+                        unit = first_line_parts[2] if len(first_line_parts) > 2 else "ч"
+                        if unit.startswith("м"): delta = timedelta(minutes=amt); time_str = f"{amt} минут"
+                        elif unit.startswith("д"): delta = timedelta(days=amt); time_str = f"{amt} дней"
+                        else: delta = timedelta(hours=amt); time_str = f"{amt} часов"
+                    except: pass
 
-                    if args:
-                        try:
-                            amount = int(args[0])
-                            unit = args[1].lower() if len(args) > 1 else "ч"
-                            
-                            if unit.startswith("м"): # Минуты
-                                delta = timedelta(minutes=amount)
-                                time_str = f"{amount} минут(ы)"
-                            elif unit.startswith("д"): # Дни
-                                delta = timedelta(days=amount)
-                                time_str = f"{amount} дней"
-                            else: # Часы (по умолчанию если не указано)
-                                delta = timedelta(hours=amount)
-                                time_str = f"{amount} часов"
-                        except ValueError:
-                            pass # Если ввели не число, оставим 1 час
-
-                    await context.bot.restrict_chat_member(
-                        chat_id, 
-                        t_id, 
-                        permissions=ChatPermissions(can_send_messages=False), 
-                        until_date=datetime.now() + delta
-                    )
+                # МОЛЧИ
+                if cmd == "молчи":
+                    await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.now() + delta)
                     await update.message.reply_text(f"🤫 Тишина на {time_str}.\n📝 Причина: {reason}")
                 
-                elif first_line == "скажи":
+                # БАН
+                elif cmd == "бан":
+                    await context.bot.ban_chat_member(chat_id, t_id, until_date=datetime.now() + delta)
+                    await update.message.reply_text(f"🚫 Бан выдан на {time_str}.\n📝 Причина: {reason}")
+
+                # СКАЖИ (Снять мут)
+                elif cmd == "скажи":
                     await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=True, can_send_other_messages=True, can_send_polls=True, can_send_media_messages=True))
                     await update.message.reply_text(f"🔊 Голос возвращен.\n📝 Причина: {reason}")
                 
-                elif first_line == "варн":
+                # РАЗБАН
+                elif cmd == "разбан":
+                    await context.bot.unban_chat_member(chat_id, t_id, only_if_banned=True)
+                    await update.message.reply_text(f"✅ Пользователь разбанен.\n📝 Причина: {reason}")
+
+                # ВАРН
+                elif cmd == "варн":
                     warns[t_id] = warns.get(t_id, 0) + 1
                     await update.message.reply_text(f"⚠️ Варн выдан ({warns[t_id]}/3)\n📝 Причина: {reason}")
-            except: pass
+
+                # СНЯТЬ ВАРН
+                elif cmd == "снять" and "варн" in first_line_full:
+                    warns[t_id] = 0
+                    await update.message.reply_text(f"✅ Варны обнулены.\n📝 Причина: {reason}")
+
+            except Exception as e:
+                logging.error(f"Ошибка модерации: {e}")
 
 # --- РУЛЕТКА ---
 async def roulette_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -306,4 +322,3 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(rt_action_callback, pattern="^rt_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     app.run_polling(drop_pending_updates=True)
-    
