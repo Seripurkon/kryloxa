@@ -62,12 +62,13 @@ async def show_profile(update: Update, user):
     rank = get_rank(u_id)
     if u_id == OWNER_ID:
         bal_text = "∞ (Owner)"
-        if u_id == HELPER_ID:
-            rank += " Tester"
-        elif u_id == TESTER_ID:
-            rank += " The Main Tester"
     else:
         bal_text = f"{user_balance.get(u_id, 0)} KLC"
+
+    if u_id == HELPER_ID:
+        rank += " Tester"
+    elif u_id == TESTER_ID:
+        rank += " The Main Tester"
 
     text = (
         f"👤 Профиль пользователя {user.first_name}:**\n"
