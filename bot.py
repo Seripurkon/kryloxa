@@ -50,8 +50,8 @@ def reload_chamber(g):
 
 # --- ФУНКЦИЯ ПРОФИЛЯ ---
 async def show_profile(update: Update, user):
-    rank = get_rank(u_id)
     u_id = user.id
+    rank = get_rank(u_id)
     if u_id == OWNER_ID:
         bal_text = "∞ (Owner)"
     elif u_id == HELPER_ID:
