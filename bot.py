@@ -9,7 +9,8 @@ from telegram.request import HTTPXRequest
 
 # --- НАСТРОЙКИ ---
 TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
-OWNER_ID = 5679520675 
+OWNER_ID = 5679520675
+TESTER_ID = 782585931 #for testing purpose
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
 BOT_VERSION = "0.9.6"
