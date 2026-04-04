@@ -7,29 +7,40 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPer
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram.request import HTTPXRequest
 
-# --- НАСТРОЙКИ ---
+# --- НАСТРОЙКИ СИСТЕМЫ ---
 TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
 OWNER_ID = 5679520675 
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
 BOT_VERSION = "0.9.7-beta"
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Логирование для отладки
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# --- РАБОТА С ДАННЫМИ ---
+# --- БЛОК РАБОТЫ С ДАННЫМИ (JSON) ---
 def load_json(filename, default):
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                # Превращаем ID в числа для корректной работы
                 return {int(k): v for k, v in data.items()}
-        except: return default
+        except Exception as e:
+            logging.error(f"Ошибка загрузки {filename}: {e}")
+            return default
     return default
 
 def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения {filename}: {e}")
 
+# Загружаем базу
 user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4})
 user_balance = load_json(ECONOMY_FILE, {})
 warns = {}
@@ -46,7 +57,7 @@ def reload_chamber(g):
     random.shuffle(chamber)
     g['chamber'] = chamber
 
-# --- ФУНКЦИЯ ПРОФИЛЯ ---
+# --- ФУНКЦИИ ИНТЕРФЕЙСА ---
 async def show_profile(update: Update, user):
     u_id = user.id
     bal_text = "∞ (Owner)" if u_id == OWNER_ID else f"{user_balance.get(u_id, 0)} KLC"
@@ -62,9 +73,9 @@ async def show_profile(update: Update, user):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- КОМАНДЫ ---
+# --- КОМАНДЫ МЕНЮ ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Бот запущен! Активирован протокол 'Глаз Крилоксы'. Напиши /help.")
+    await update.message.reply_text("👋 Бот запущен! Протокол 'Глаз Крилоксы' активирован. Напиши /help.")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -74,10 +85,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💸 **Передача:** передать [сумма] (ответом)\n"
         "🛡 **Модер:** инфа, молчи [время], бан [время], варн, скажи, разбан, снять варн\n"
         "👑 **Админ:** дать админку [1-3] (ответом)\n"
-        "🎲 **Игра:** Рулетка (ответом)"
+        "🎲 **Игра:** Рулетка (напиши 'рулетка' ответом)"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
+# --- МАГАЗИН ---
 async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bal = user_balance.get(user.id, 0) if user.id != OWNER_ID else "∞"
@@ -91,7 +103,33 @@ async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
           [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-# --- ТЕКСТОВЫЙ ОБРАБОТЧИК ---
+async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    u_id = q.from_user.id
+    bal = user_balance.get(u_id, 0)
+    
+    if q.data == "buy_unmute":
+        if u_id == OWNER_ID or bal >= 1000:
+            if u_id != OWNER_ID: user_balance[u_id] -= 1000
+            save_json(ECONOMY_FILE, user_balance)
+            try:
+                # Снимаем все ограничения
+                await context.bot.unban_chat_member(q.message.chat_id, u_id, only_if_banned=True)
+                await q.answer("✅ Ограничения сняты!", show_alert=True)
+            except: await q.answer("❌ Ошибка прав бота.")
+        else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
+    
+    elif q.data == "buy_unwarn":
+        if u_id == OWNER_ID or bal >= 500:
+            if warns.get(u_id, 0) > 0:
+                if u_id != OWNER_ID: user_balance[u_id] -= 500
+                warns[u_id] -= 1
+                save_json(ECONOMY_FILE, user_balance)
+                await q.answer("✅ Варн снят!", show_alert=True)
+            else: await q.answer("❌ У вас нет варнов.")
+        else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
+
+# --- ОСНОВНОЙ ОБРАБОТЧИК ТЕКСТА ---
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     
@@ -104,9 +142,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user, chat_id, msg = update.effective_user, update.effective_chat.id, update.message.reply_to_message
 
+    # Статистика сообщений (ТП)
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
+    # Команды без ответа
     if first_line_full == "тп":
         top_list = sorted(daily_stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10]
         res = "📊 **ТОП ОБЩИТЕЛЬНЫХ:**\n\n"
@@ -132,48 +172,53 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_json(ECONOMY_FILE, user_balance)
         await update.message.reply_text(f"🎁 +{amt} KLC!")
 
+    # Команды, требующие ОТВЕТ на сообщение
     if msg:
         t_id = msg.from_user.id
         c_rank, t_rank = get_rank(user.id), get_rank(t_id)
 
+        # Админка
         if first_line_full.startswith("дать админку") and user.id == OWNER_ID:
             try:
                 r_val = int(first_line_parts[2]) if len(first_line_parts) > 2 else 3
                 if r_val < 1 or r_val > 3: r_val = 3
                 user_ranks[t_id] = r_val
                 save_json(RANKS_FILE, user_ranks)
-                return await update.message.reply_text(f"✅ Пользователь {msg.from_user.first_name} назначен Админом (Ранг {r_val})!")
+                return await update.message.reply_text(f"✅ {msg.from_user.first_name} теперь Админ (Ранг {r_val})!")
             except:
                 user_ranks[t_id] = 3
                 save_json(RANKS_FILE, user_ranks)
-                return await update.message.reply_text(f"✅ Пользователь {msg.from_user.first_name} назначен Админом (Ранг 3)!")
+                return await update.message.reply_text(f"✅ {msg.from_user.first_name} теперь Админ (Ранг 3)!")
 
+        # Передача денег
         if first_line_full.startswith("передать"):
             try:
                 amount = int(first_line_parts[1])
+                if amount <= 0: return
                 if user.id != OWNER_ID and user_balance.get(user.id, 0) < amount:
                     return await update.message.reply_text("❌ Недостаточно KLC")
                 if user.id != OWNER_ID: user_balance[user.id] -= amount
                 user_balance[t_id] = user_balance.get(t_id, 0) + amount
                 save_json(ECONOMY_FILE, user_balance)
-                await update.message.reply_text(f"✅ Передано {amount} KLC пользователю {msg.from_user.first_name}")
+                await update.message.reply_text(f"✅ Передано {amount} KLC!")
             except: pass
 
         if first_line_full == "инфа":
             return await show_profile(update, msg.from_user)
 
-        # --- БЛОК МОДЕРАЦИИ ---
+        # МОДЕРАЦИЯ
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
             try:
+                # Парсинг времени
                 delta = timedelta(hours=1)
                 time_str = "1 час"
                 if len(first_line_parts) > 1:
                     try:
                         amt = int(first_line_parts[1])
                         unit = first_line_parts[2].lower() if len(first_line_parts) > 2 else "ч"
-                        if unit.startswith("м"): delta = timedelta(minutes=amt); time_str = f"{amt} минут"
-                        elif unit.startswith("д"): delta = timedelta(days=amt); time_str = f"{amt} дней"
-                        else: delta = timedelta(hours=amt); time_str = f"{amt} часов"
+                        if unit.startswith("м"): delta = timedelta(minutes=amt); time_str = f"{amt} мин."
+                        elif unit.startswith("д"): delta = timedelta(days=amt); time_str = f"{amt} дн."
+                        else: delta = timedelta(hours=amt); time_str = f"{amt} час."
                     except: pass
 
                 if cmd == "молчи":
@@ -182,27 +227,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 elif cmd == "бан":
                     await context.bot.ban_chat_member(chat_id, t_id, until_date=datetime.now() + delta)
-                    await update.message.reply_text(f"🚫 Бан выдан на {time_str}.\n📝 Причина: {reason}")
+                    await update.message.reply_text(f"🚫 Бан на {time_str}.\n📝 Причина: {reason}")
 
                 elif cmd == "скажи":
-                    permissions = ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True)
-                    await context.bot.restrict_chat_member(chat_id, t_id, permissions=permissions)
+                    # Снимаем любые блокировки через unban
+                    await context.bot.unban_chat_member(chat_id, t_id, only_if_banned=True)
+                    # Возвращаем стандартные права
+                    perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True)
+                    await context.bot.restrict_chat_member(chat_id, t_id, permissions=perms)
                     await update.message.reply_text(f"🔊 Голос возвращен.\n📝 Причина: {reason}")
                 
                 elif cmd == "разбан":
                     await context.bot.unban_chat_member(chat_id, t_id, only_if_banned=True)
-                    await update.message.reply_text(f"✅ Пользователь разбанен.\n📝 Причина: {reason}")
+                    await update.message.reply_text(f"✅ Разбанен.\n📝 Причина: {reason}")
 
                 elif cmd == "варн":
                     warns[t_id] = warns.get(t_id, 0) + 1
-                    await update.message.reply_text(f"⚠️ Варн выдан ({warns[t_id]}/3)\n📝 Причина: {reason}")
+                    await update.message.reply_text(f"⚠️ Варн ({warns[t_id]}/3)\n📝 Причина: {reason}")
 
                 elif cmd == "снять" and "варн" in first_line_full:
                     warns[t_id] = 0
                     await update.message.reply_text(f"✅ Варны обнулены.\n📝 Причина: {reason}")
-            except: pass
 
-# --- РУЛЕТКА (БЕЗ ИЗМЕНЕНИЙ) ---
+            except Exception as e:
+                logging.error(f"Ошибка модерации: {e}")
+
+# --- ИГРА РУЛЕТКА ---
 async def roulette_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
     if not msg or update.effective_user.id == msg.from_user.id: return
@@ -256,30 +306,39 @@ async def rt_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 pun = f"⚠️ {l_name} получает ВАРН!"
             elif bet == "mute":
                 await context.bot.restrict_chat_member(q.message.chat_id, loser_id, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.now()+timedelta(hours=1))
-                pun = f"🤫 {l_name} в МУТЕ на час!"
+                pun = f"🤫 {l_name} в МУТЕ!"
             elif bet == "ban":
                 await context.bot.ban_chat_member(q.message.chat_id, loser_id, until_date=datetime.now()+timedelta(days=1))
-                pun = f"🚫 {l_name} ЗАБАНЕН на день!"
+                pun = f"🚫 {l_name} в БАНЕ!"
             elif bet == "klc":
                 if loser_id != OWNER_ID: user_balance[loser_id] = user_balance.get(loser_id, 0) - 100
                 user_balance[winner_id] = user_balance.get(winner_id, 0) + 100
                 save_json(ECONOMY_FILE, user_balance)
-                pun = f"💰 {l_name} теряет 100 KLC, а {w_name} их забирает!"
+                pun = f"💰 {w_name} забирает 100 KLC!"
         except: pun = "⚠️ Ошибка прав."
-        await q.edit_message_text(f"{msg}\n\n🏆 **Победил {w_name}!**\n{pun}", parse_mode="Markdown")
+        await q.edit_message_text(f"{msg}\n\n🏆 Победил {w_name}!\n{pun}")
         del roulette_games[g_id]
     else:
         if not g['chamber']: reload_chamber(g)
         await update_ui(q, g_id, msg)
 
-# --- ЗАПУСК ---
+# --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=20)).build()
+    
+    # Регистрация команд
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("magaz", magaz_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_start))
+    
+    # Регистрация Callback-ов (Магазин и Рулетка)
+    app.add_handler(CallbackQueryHandler(shop_callback, pattern="^buy_"))
     app.add_handler(CallbackQueryHandler(rt_bet_callback, pattern="^rbet_"))
     app.add_handler(CallbackQueryHandler(rt_action_callback, pattern="^rt_"))
+    
+    # Регистрация Рулетки и Текстового обработчика
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]улетка$"), roulette_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    
+    print("Бот v0.9.7 успешно запущен!")
     app.run_polling(drop_pending_updates=True)
