@@ -186,13 +186,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"🤫 Тишина на час.\n📝 Причина: {reason}")
                 elif main_cmd == "скажи":
                     # Твой друг доделает, я оставил базовый unban
-                    await context.bot.restrict_chat_member(chat_id,t_id,permissions=ChatPermissions(
-                            can_send_messages=True,
-                            can_send_media_messages=True,
-                            can_send_other_messages=True,
-                            can_add_web_page_previews=True
-                        )
-                    )
+                    await context.bot.restrict_chat_member(chat_id,t_id,permissions=ChatPermissions(can_send_messages=True))
                     await update.message.reply_text("🔊 Пользователь снова может писать")
                 elif main_cmd == "бан":
                     await context.bot.ban_chat_member(chat_id, t_id, until_date=datetime.now()+timedelta(days=1))
