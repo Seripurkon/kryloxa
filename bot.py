@@ -19,7 +19,8 @@ HELPER_ID = 8475300408
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
 PROMOS_FILE = "promos.json" 
-BOT_VERSION = "0.9.8" # ECONOMY 2.0 FULL
+ACTIVATED_PROMOS_FILE = "activated_promos.json" # Новая БД для защиты
+BOT_VERSION = "0.9.8" # ECONOMY 2.0 FULL FIXED
 
 # Состояния для промокода
 PROMO_NAME, PROMO_TIME, PROMO_REWARD = range(3)
@@ -61,6 +62,8 @@ def save_json(filename, data):
 user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4, HELPER_ID: -1})
 user_balance = load_json(ECONOMY_FILE, {})
 active_promos = load_json(PROMOS_FILE, {})
+# Структура: {"название_промо": [id_user1, id_user2]}
+used_promo_db = load_json(ACTIVATED_PROMOS_FILE, {}) 
 warns = {}
 roulette_games = {}
 daily_stats = {}
@@ -145,7 +148,10 @@ async def promo_get_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reward = int(update.message.text)
         name = context.user_data['temp_promo_name']
         active_promos[name] = {"reward": reward, "expire": context.user_data['temp_promo_expire']}
+        # Создаем пустой список использовавших в БД
+        used_promo_db[name] = [] 
         save_json(PROMOS_FILE, active_promos)
+        save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
         await update.message.reply_text(f"✅ Поздравляю вы создали промокод \"{name}\"\n⏳ Действует данный промокод: {context.user_data['temp_promo_timetext']}\n💰 Количество KLC за активацию: {reward}")
         return ConversationHandler.END
     except:
@@ -274,18 +280,41 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
-    # АКТИВАЦИЯ ПРОМОКОДА
+    # АКТИВАЦИЯ ПРОМОКОДА (С ЗАЩИТОЙ ОТ ПОВТОРНОГО ИСПОЛЬЗОВАНИЯ)
     if first_line.startswith("промо:"):
         code = full_text.replace("Промо:", "").replace("промо:", "").strip()
+        u_id = user.id
+        
         if code in active_promos:
+            # Инициализация списка в новой БД, если он пуст (для старых кодов)
+            if code not in used_promo_db:
+                used_promo_db[code] = []
+                save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
+            
+            # ПРОВЕРКА: Активировал ли этот юзер код ранее?
+            if u_id in used_promo_db[code]:
+                return await update.message.reply_text("❌ Брат, халява только один раз! Ты уже получил KLC по этому коду.")
+
             data = active_promos[code]
+            # Проверка времени жизни кода
             if datetime.now() < datetime.fromisoformat(data['expire']):
-                user_balance[user.id] = user_balance.get(user.id, 0) + data['reward']
+                # ВЫДАЧА НАГРАДЫ
+                user_balance[u_id] = user_balance.get(u_id, 0) + data['reward']
+                # ЗАПИСЬ АКТИВАЦИИ: Добавляем юзера в список
+                used_promo_db[code].append(u_id)
+                
+                # Сохранение всех БД
                 save_json(ECONOMY_FILE, user_balance)
+                save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
+                
                 await update.message.reply_text(f"🎫 Промокод активирован! Вы получили {data['reward']} KLC 💰")
             else:
                 del active_promos[code]
+                # Можно удалить и список юзеров, чтобы не засорять БД
+                if code in used_promo_db: del used_promo_db[code]
+                
                 save_json(PROMOS_FILE, active_promos)
+                save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
                 await update.message.reply_text("❌ Промокод истек.")
         else:
             await update.message.reply_text("❌ Такого промокода не существует.")
@@ -401,5 +430,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(all_callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    print(f"Kryloxa System v{BOT_VERSION} ЗАПУЩЕН! ВСЕ СИСТЕМЫ В НОРМЕ.")
+    print(f"Kryloxa System v{BOT_VERSION} ЗАПУЩЕН! ЗАЩИТА ОТ ДЮПА ПРОМО ВКЛЮЧЕНА.")
     app.run_polling(drop_pending_updates=True)
