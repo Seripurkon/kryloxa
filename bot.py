@@ -213,7 +213,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if main_cmd == "молчи":
                     await context.bot.restrict_chat_member(chat_id, t_id,
                                                            permissions=ChatPermissions(can_send_messages=False),
-                                                           until_date=datetime.now() + timedelta(minutes=hours_time))
+                                                           until_date=datetime.now() + timedelta(hours=hours_time))
                     await update.message.reply_text(f"🤫 Тишина на {hours_time} час(а).\n📝 Причина: {reason}")
                 elif main_cmd == "скажи":
                     # Твой друг доделает, я оставил базовый unban
