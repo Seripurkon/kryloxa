@@ -11,49 +11,94 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# --- НАСТРОЙКИ ---
+# ==========================================
+# КОНФИГУРАЦИЯ И НАСТРОЙКИ
+# ==========================================
 TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
 OWNER_ID = 5679520675
 TESTER_ID = 782585931
 HELPER_ID = 8475300408
 
-# Реквизиты и данные магазина
 CARD_NUMBER = "2202 2084 1533 2171"
 SUPPORT_BOT_NAME = "kryloxaHelper_bot"
 MIN_WITHDRAW_KLC = 4000 
+CURRENCY_RATE = 0.06 
 
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
 PROMOS_FILE = "promos.json" 
 ACTIVATED_PROMOS_FILE = "activated_promos.json"
 DONATORS_FILE = "donators.json"
-BOT_VERSION = "1.1.1"
+BOT_VERSION = "1.2.0"
 
-# Состояния для промокода
+# Состояния для создания промокода
 PROMO_NAME, PROMO_TIME, PROMO_REWARD = range(3)
 
 # Настройки Казино
 SLOTS_SYMBOLS = ["🍋", "🍒", "🔔", "💎", "7️⃣"]
 SLOTS_WEIGHTS = [50, 30, 15, 4.9, 0.1] 
 MIN_BET_SLOTS = 500
-CURRENCY_RATE = 0.06 
-MAX_DAILY_WITHDRAW = 10000
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ БАЗЫ ---
+# ==========================================
+# РАБОТА С ДАННЫМИ (JSON)
+# ==========================================
 def load_json(filename, default):
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return {int(k) if isinstance(k, str) and k.isdigit() else k: v for k, v in data.items()}
-        except: return default
+                # Конвертируем ключи в int, если это ID пользователя
+                return {int(k) if k.isdigit() else k: v for k, v in data.items()}
+        except Exception as e:
+            logging.error(f"Ошибка загрузки {filename}: {e}")
+            return default
     return default
 
 def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+# Загрузка БД
+user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4, HELPER_ID: -1})
+user_balance = load_json(ECONOMY_FILE, {})
+active_promos = load_json(PROMOS_FILE, {})
+used_promo_db = load_json(ACTIVATED_PROMOS_FILE, {}) 
+donators = load_json(DONATORS_FILE, [])
+
+# Оперативные данные (в памяти)
+warns = {}
+roulette_games = {}
+bonus_timers = {}
+work_timers = {}
+withdraw_requests = {}
+
+# ==========================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ==========================================
+def get_rank(user_id):
+    if user_id == OWNER_ID:
+        return 4
+    return user_ranks.get(user_id, 0)
+
+def get_user_stats(u_id):
+    if u_id not in user_balance:
+        user_balance[u_id] = {"main": 500, "bonus": 0}
+    # Если данные старого формата (просто число)
+    if isinstance(user_balance[u_id], int):
+        val = user_balance[u_id]
+        user_balance[u_id] = {"main": val, "bonus": 0}
+    return user_balance[u_id]
+
+def update_balance(u_id, amount, b_type="main"):
+    if u_id == OWNER_ID and amount < 0:
+        return # У овнера не отнимаем
+    stats = get_user_stats(u_id)
+    stats[b_type] += amount
+    if stats[b_type] < 0:
+        stats[b_type] = 0
+    save_json(ECONOMY_FILE, user_balance)
 
 def decline_word(number, titles):
     cases = [2, 0, 1, 1, 1, 2]
@@ -61,9 +106,11 @@ def decline_word(number, titles):
 
 def parse_kryloxa_time(text):
     text = text.lower().strip()
-    if "навсегда" in text: return -1, "навсегда 💀"
+    if "навсегда" in text:
+        return -1, "навсегда 💀"
     match = re.search(r"(\d+)\s*([мчдг])", text)
-    if not match: return None, None
+    if not match:
+        return None, None
     amount = int(match.group(1))
     unit = match.group(2)
     if unit == 'м': return amount * 60, f"{amount} {decline_word(amount, ['минуту', 'минуты', 'минут'])}"
@@ -72,232 +119,299 @@ def parse_kryloxa_time(text):
     if unit == 'г': return amount * 31536000, f"{amount} {decline_word(amount, ['год', 'года', 'лет'])}"
     return None, None
 
-# Загрузка данных
-user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4, HELPER_ID: -1})
-user_balance = load_json(ECONOMY_FILE, {})
-active_promos = load_json(PROMOS_FILE, {})
-used_promo_db = load_json(ACTIVATED_PROMOS_FILE, {}) 
-donators = load_json(DONATORS_FILE, [])
-
-warns = {}
-roulette_games = {}
-daily_stats = {}
-bonus_timers = {}
-work_timers = {}
-withdraw_requests = {}
-
-# --- ЛОГИКА ЭКОНОМИКИ ---
-def get_user_stats(u_id):
-    if u_id not in user_balance:
-        user_balance[u_id] = {"main": 500, "bonus": 0}
-    if isinstance(user_balance[u_id], int):
-        old_val = user_balance[u_id]
-        user_balance[u_id] = {"main": old_val, "bonus": 0}
-        save_json(ECONOMY_FILE, user_balance)
-    return user_balance[u_id]
-
-def update_balance(u_id, amount, b_type="main"):
-    if u_id == OWNER_ID and amount < 0: return 
+# ==========================================
+# ЛОГИКА ИГР (РУЛЕТКА И СЛОТЫ)
+# ==========================================
+async def run_slots(u_id, bet):
     stats = get_user_stats(u_id)
-    stats[b_type] += amount
-    if stats[b_type] < 0: stats[b_type] = 0
-    save_json(ECONOMY_FILE, user_balance)
+    total = stats["main"] + stats["bonus"]
+    
+    if total < bet:
+        return "❌ Недостаточно KLC!", False
 
-def get_rank(user_id):
-    if user_id == OWNER_ID: return 4
-    return user_ranks.get(user_id, 0)
+    # Сначала списываем бонусы, потом основу
+    if stats["bonus"] >= bet:
+        update_balance(u_id, -bet, "bonus")
+    else:
+        remainder = bet - stats["bonus"]
+        update_balance(u_id, -stats["bonus"], "bonus")
+        update_balance(u_id, -remainder, "main")
 
-# --- КОМАНДЫ БОТА ---
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Kryloxa System запущена! Напиши /help для списка команд.")
+    res = [random.choices(SLOTS_SYMBOLS, weights=SLOTS_WEIGHTS)[0] for _ in range(3)]
+    win = 0
 
+    if res[0] == res[1] == res[2]:
+        if res[0] == "7️⃣": win = bet * 200
+        elif res[0] == "💎": win = bet * 25
+        else: win = bet * 10
+    elif (res[0] == res[1] or res[1] == res[2] or res[0] == res[2]) and random.random() > 0.6:
+        win = int(bet * 1.5)
+
+    if win > 0:
+        update_balance(u_id, win, "main")
+        return f"🎰 `[ {res[0]} | {res[1]} | {res[2]} ]` \n\n✅ **ВИН!** +{win} KLC", True
+    
+    return f"🎰 `[ {res[0]} | {res[1]} | {res[2]} ]` \n\n❌ **Мимо!**", True
+
+def reload_roulette_chamber(game):
+    chamber = [True, True, True, False, False, False]
+    random.shuffle(chamber)
+    game['chamber'] = chamber
+
+# ==========================================
+# КОМАНДЫ И ОБРАБОТЧИКИ
+# ==========================================
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        f"📜 **СПИСОК КОМАНД ({BOT_VERSION})**\n\n"
-        "🕹 **Меню:** /start, /help, /donate, /magaz\n"
-        "💰 **Экономика:** баланс (б), бонус, тп, обо мне\n"
-        "🎰 **Казино:** `слоты [ставка]`, `вывод [сумма] [карта]`\n"
-        "⚒ **Заработок:** напиши 'работа' (в ЛС бота)\n"
-        "🎫 **Промо:** `Промо: [код]`\n"
-        "🛡 **Модер:** инфа, молчи, скажи, бан, варн"
+        f"📜 **Kryloxa System v{BOT_VERSION}**\n\n"
+        "**🎮 ИГРЫ:**\n"
+        "• `слоты [ставка]` — испытать удачу\n"
+        "• `рулетка [ставка]` — дуэль с игроком\n"
+        "• `работа` — заработать бонус в ЛС\n\n"
+        "**💰 ЭКОНОМИКА:**\n"
+        "• `баланс` или `б` — твой кошелек\n"
+        "• `бонус` — ежедневный подарок\n"
+        "• `тп [сумма] [ID/реплай]` — передать KLC\n"
+        "• `вывод [сумма] [карта]` — создать заявку\n\n"
+        "**🛡 МОДЕРАЦИЯ:**\n"
+        "• `инфа` — данные о пользователе\n"
+        "• `молчи [время]` — мут\n"
+        "• `скажи` — размут\n"
+        "• `бан` / `варн` — наказания\n\n"
+        "**🛒 МАГАЗИН:** /magaz, /donate"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def donate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "<b>🏦 Официальный обменник KLC</b>\n\n"
-        "💳 <b>Реквизиты (нажми для копирования):</b>\n"
+        "<b>🏦 Kryloxa Shop & Exchange</b>\n\n"
+        "💳 <b>Реквизиты для оплаты:</b>\n"
         f"<code>{CARD_NUMBER}</code>\n\n"
-        "💵 <b>Прайс KLC:</b>\n"
-        "• 📦 5,000 KLC — 300₽\n"
-        "• 💼 10,000 KLC — 550₽\n\n"
-        f"⚠️ После оплаты пишите в @{SUPPORT_BOT_NAME} для зачисления."
+        "📦 <b>Пакеты KLC:</b>\n"
+        "• 5,000 KLC — 300₽\n"
+        "• 10,000 KLC — 550₽\n\n"
+        f"После оплаты скиньте чек в @{SUPPORT_BOT_NAME}"
     )
-    kb = [[InlineKeyboardButton("📥 Прислать чек", url=f"https://t.me/{SUPPORT_BOT_NAME}")],
-          [InlineKeyboardButton("📤 Оформить вывод", url=f"https://t.me/{SUPPORT_BOT_NAME}")]]
+    kb = [[InlineKeyboardButton("📥 Отправить чек", url=f"https://t.me/{SUPPORT_BOT_NAME}")],
+          [InlineKeyboardButton("📤 Заказать вывод", url=f"https://t.me/{SUPPORT_BOT_NAME}")]]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-async def show_profile(update: Update, user):
-    u_id = user.id
-    rank = str(get_rank(u_id))
-    stats = get_user_stats(u_id)
-    bal_main = "∞" if u_id == OWNER_ID else stats['main']
-    text = (
-        f"👤 Профиль {user.first_name}:\n"
-        f"🆔 ID: `{u_id}`\n"
-        f"⭐️ Ранг: {rank}\n"
-        f"💳 Чистый: {bal_main} KLC\n"
-        f"🎁 Бонус: {stats['bonus']} KLC\n"
-        f"⚠️ Варны: {warns.get(u_id, 0)}/3"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     stats = get_user_stats(user.id)
-    bal = "∞" if user.id == OWNER_ID else (stats['main'] + stats['bonus'])
-    text = f"🛒 **Kryloxa Shop**\n💰 Общий баланс: {bal} KLC\nВыберите услугу:"
-    kb = [[InlineKeyboardButton("🚫 Снять мут (1000 KLC)", callback_data="buy_unmute")],
-          [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]]
+    total = stats["main"] + stats["bonus"]
+    text = f"🛒 **Магазин услуг**\n💰 Баланс: {total} KLC"
+    kb = [
+        [InlineKeyboardButton("🚫 Снять мут (1000 KLC)", callback_data="buy_unmute")],
+        [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]
+    ]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-async def work_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return await update.message.reply_text("❌ Команда 'работа' только в ЛС бота!")
-    kb = [[InlineKeyboardButton("⚒ Начать смену", callback_data="do_work")]]
-    await update.message.reply_text("🏭 Нажми кнопку, чтобы получить бонусные KLC:", reply_markup=InlineKeyboardMarkup(kb))
-
-# --- КАЗИНО И ИГРЫ ---
-async def run_slots(u_id, bet):
-    stats = get_user_stats(u_id)
-    total = stats["main"] + stats["bonus"]
-    if total < bet: return "❌ Мало KLC!", False
-    if stats["bonus"] >= bet: update_balance(u_id, -bet, "bonus")
-    else:
-        rem = bet - stats["bonus"]
-        update_balance(u_id, -stats["bonus"], "bonus"); update_balance(u_id, -rem, "main")
-    res = [random.choices(SLOTS_SYMBOLS, weights=SLOTS_WEIGHTS)[0] for _ in range(3)]
-    win = 0
-    if res[0] == res[1] == res[2]:
-        win = bet * 200 if res[0] == "7️⃣" else (bet * 25 if res[0] == "💎" else bet * 10)
-    elif (res[0] == res[1] or res[1] == res[2] or res[0] == res[2]) and random.random() > 0.6:
-        win = int(bet * 1.5)
-    if win > 0:
-        update_balance(u_id, win, "main")
-        return f"🎰 `[ {res[0]} | {res[1]} | {res[2]} ]` \n\n✅ **ВИН!** +{win} KLC (в чистый)", True
-    return f"🎰 `[ {res[0]} | {res[1]} | {res[2]} ]` \n\n❌ **Мимо!**", True
-
-def get_slots_kb(bet):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🎰 Снова", callback_data=f"c_spin_{bet}")],
-                                 [InlineKeyboardButton("🛑 Стоп", callback_data="c_stop")]])
-
-# --- ОБРАБОТКА CALLBACK ---
-async def all_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    u_id = q.from_user.id
-    
-    if q.data == "do_work":
-        now = datetime.now()
-        last = work_timers.get(u_id)
-        if last and now < last + timedelta(seconds=30):
-            return await q.answer(f"⏳ Жди {int((last+timedelta(seconds=30)-now).total_seconds())} сек.", show_alert=True)
-        update_balance(u_id, 50, "bonus"); work_timers[u_id] = now
-        await q.answer("🎁 +50 Бонусных KLC!"); await q.edit_message_text("⚒ Смена отработана! +50 KLC.")
-
-    elif q.data.startswith("buy_"):
-        stats = get_user_stats(u_id); total = stats["main"] + stats["bonus"]
-        cost = 1000 if q.data == "buy_unmute" else 500
-        if u_id == OWNER_ID or total >= cost:
-            if stats["bonus"] >= cost: update_balance(u_id, -cost, "bonus")
-            else: rem = cost - stats["bonus"]; update_balance(u_id, -stats["bonus"], "bonus"); update_balance(u_id, -rem, "main")
-            if q.data == "buy_unmute":
-                try: await context.bot.restrict_chat_member(q.message.chat_id, u_id, permissions=ChatPermissions(can_send_messages=True))
-                except: pass
-            elif q.data == "buy_unwarn": warns[u_id] = max(0, warns.get(u_id, 0) - 1)
-            await q.answer("✅ Готово!", show_alert=True)
-        else: await q.answer("❌ Недостаточно средств!", show_alert=True)
-
-    elif q.data.startswith("c_spin_"):
-        bet = int(q.data.split("_")[2])
-        txt, ok = await run_slots(u_id, bet)
-        await q.edit_message_text(txt, reply_markup=get_slots_kb(bet) if ok else None, parse_mode="Markdown")
-    
-    elif q.data == "c_stop": await q.edit_message_text("🛑 Игра завершена.")
-
-# --- ПРОМОКОДЫ ---
-async def promo_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID: return ConversationHandler.END
-    await update.message.reply_text("1) Имя промокода?"); return PROMO_NAME
-
-async def promo_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['temp_promo_name'] = update.message.text.strip()
-    await update.message.reply_text("2) Время действия? (Напр: 1д, 5ч)"); return PROMO_TIME
-
-async def promo_get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    seconds, _ = parse_kryloxa_time(update.message.text)
-    if not seconds: return PROMO_TIME
-    context.user_data['temp_promo_expire'] = (datetime.now() + timedelta(seconds=seconds)).isoformat()
-    await update.message.reply_text("3) Награда (KLC)?"); return PROMO_REWARD
-
-async def promo_get_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        reward = int(update.message.text); name = context.user_data['temp_promo_name']
-        active_promos[name] = {"reward": reward, "expire": context.user_data['temp_promo_expire']}
-        save_json(PROMOS_FILE, active_promos); await update.message.reply_text(f"✅ Промокод {name} создан!"); return ConversationHandler.END
-    except: return PROMO_REWARD
-
-# --- ГЛАВНЫЙ ТЕКСТОВЫЙ ОБРАБОТЧИК ---
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==========================================
+# ГЛАВНЫЙ ОБРАБОТЧИК ТЕКСТА (ЛОГИКА)
+# ==========================================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
-    text = update.message.text.lower(); user = update.effective_user; stats = get_user_stats(user.id)
     
-    if text.startswith("промо:"):
-        code = text.replace("промо:", "").strip()
-        if code in active_promos:
-            if user.id in used_promo_db.get(code, []): return await update.message.reply_text("❌ Ты уже активировал это!")
-            data = active_promos[code]
-            if datetime.now() < datetime.fromisoformat(data['expire']):
-                update_balance(user.id, data['reward'], "bonus")
-                used_promo_db.setdefault(code, []).append(user.id); save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
-                await update.message.reply_text(f"🎫 Промокод активирован! +{data['reward']} Бонусных KLC")
-            else: await update.message.reply_text("❌ Срок действия истек.")
-    
+    raw_text = update.message.text
+    text = raw_text.lower().strip()
+    user = update.effective_user
+    u_id = user.id
+    stats = get_user_stats(u_id)
+
+    # --- ПЕРЕДАЧА ДЕНЕГ (ТП) ---
+    if text.startswith("тп "):
+        parts = text.split()
+        if len(parts) >= 2:
+            try:
+                amount = int(parts[1])
+                target_user = None
+                if update.message.reply_to_message:
+                    target_user = update.message.reply_to_message.from_user
+                elif len(parts) == 3:
+                    target_user_id = int(parts[2])
+                    target_user = await context.bot.get_chat_member(update.message.chat_id, target_user_id)
+                    target_user = target_user.user
+                
+                if not target_user or target_user.id == u_id:
+                    return await update.message.reply_text("❌ Кому передаем?")
+                
+                if stats["main"] < amount:
+                    return await update.message.reply_text("❌ Недостаточно чистых KLC!")
+                
+                update_balance(u_id, -amount, "main")
+                update_balance(target_user.id, amount, "main")
+                await update.message.reply_text(f"✅ Передано {amount} KLC пользователю {target_user.first_name}")
+            except:
+                await update.message.reply_text("❌ Ошибка. Пример: `тп 1000` (в ответ на сообщение)")
+
+    # --- БАЛАНС И БОНУС ---
     elif text in ["баланс", "б"]:
-        bal = "∞" if user.id == OWNER_ID else stats['main']
-        await update.message.reply_text(f"💰 {user.first_name}:\n💳 Чистый: {bal} KLC\n🎁 Бонусный: {stats['bonus']} KLC")
-    
+        bal_main = "∞" if u_id == OWNER_ID else stats['main']
+        await update.message.reply_text(f"💰 {user.first_name}, твой счет:\n💳 Чистые: {bal_main} KLC\n🎁 Бонусы: {stats['bonus']} KLC")
+
     elif text == "бонус":
         now = datetime.now()
-        if user.id in bonus_timers and now < bonus_timers[user.id] + timedelta(days=1):
-            return await update.message.reply_text("❌ Бонус раз в 24 часа!")
-        amt = random.randint(150, 600); update_balance(user.id, amt, "bonus")
-        bonus_timers[user.id] = now; await update.message.reply_text(f"🎁 Твой бонус: +{amt} KLC")
+        if u_id in bonus_timers and now < bonus_timers[u_id] + timedelta(days=1):
+            diff = (bonus_timers[u_id] + timedelta(days=1)) - now
+            return await update.message.reply_text(f"⏳ Бонус будет доступен через {diff.seconds // 3600}ч.")
+        
+        amt = random.randint(200, 700)
+        update_balance(u_id, amt, "bonus")
+        bonus_timers[u_id] = now
+        await update.message.reply_text(f"🎁 Получено {amt} бонусных KLC!")
 
-    elif text == "обо мне": await show_profile(update, user)
+    # --- МОДЕРАЦИЯ ---
+    elif text == "инфа":
+        target = update.message.reply_to_message.from_user if update.message.reply_to_message else user
+        t_stats = get_user_stats(target.id)
+        t_rank = get_rank(target.id)
+        info = (
+            f"👤 **Инфо: {target.first_name}**\n"
+            f"🆔 ID: `{target.id}`\n"
+            f"⭐️ Ранг: {t_rank}\n"
+            f"💳 Баланс: {t_stats['main'] + t_stats['bonus']} KLC\n"
+            f"⚠️ Варны: {warns.get(target.id, 0)}/3"
+        )
+        await update.message.reply_text(info, parse_mode="Markdown")
 
-# --- ЗАПУСК ---
+    elif text.startswith("молчи"):
+        if get_rank(u_id) < 1: return
+        target = update.message.reply_to_message
+        if not target: return
+        
+        time_sec, time_str = parse_kryloxa_time(text.replace("молчи", ""))
+        if not time_sec: time_sec = 3600; time_str = "1 час"
+        
+        try:
+            until = datetime.now() + timedelta(seconds=time_sec) if time_sec > 0 else datetime.now() + timedelta(days=365)
+            await context.bot.restrict_chat_member(update.message.chat_id, target.from_user.id, 
+                permissions=ChatPermissions(can_send_messages=False), until_date=until)
+            await update.message.reply_text(f"🔇 {target.from_user.first_name} замолчал на {time_str}")
+        except:
+            await update.message.reply_text("❌ Не хватает прав.")
+
+    # --- КАЗИНО ---
+    elif text.startswith("слоты "):
+        parts = text.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            bet = int(parts[1])
+            if bet < MIN_BET_SLOTS:
+                return await update.message.reply_text(f"❌ Минимум {MIN_BET_SLOTS} KLC!")
+            res_text, success = await run_slots(u_id, bet)
+            kb = None
+            if success:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎰 Снова", callback_data=f"c_spin_{bet}"), 
+                                             InlineKeyboardButton("🛑 Стоп", callback_data="c_stop")]])
+            await update.message.reply_text(res_text, reply_markup=kb, parse_mode="Markdown")
+
+    # --- ВЫВОД ---
+    elif text.startswith("вывод "):
+        parts = raw_text.split()
+        if len(parts) >= 3:
+            try:
+                amt = int(parts[1])
+                card = " ".join(parts[2:])
+                if amt < MIN_WITHDRAW_KLC:
+                    return await update.message.reply_text(f"❌ Минимум {MIN_WITHDRAW_KLC} KLC!")
+                
+                total_user = stats["main"] + stats["bonus"]
+                if total_user < amt:
+                    return await update.message.reply_text("❌ Недостаточно средств!")
+                
+                # Списываем
+                f_bonus = min(amt, stats["bonus"])
+                f_main = amt - f_bonus
+                update_balance(u_id, -f_main, "main")
+                update_balance(u_id, -f_bonus, "bonus")
+                
+                # Считаем выплату в рублях (бонусы дешевле)
+                rub = int(((f_main * CURRENCY_RATE) * 0.4) + ((f_bonus * CURRENCY_RATE) * 0.6))
+                rid = random.randint(100000, 999999)
+                withdraw_requests[rid] = {"u_id": u_id, "rub": rub, "m": f_main, "b": f_bonus}
+                
+                await update.message.reply_text(f"✅ Заявка #{rid} создана. Ожидайте проверки.")
+                admin_msg = f"💰 **ЗАЯВКА НА ВЫВОД #{rid}**\nОт: {user.first_name} ({u_id})\nСумма: {rub}₽\nКарта: `{card}`"
+                kb = [[InlineKeyboardButton("✅ Оплачено", callback_data=f"adm_win_{rid}"),
+                       InlineKeyboardButton("❌ Отказ", callback_data=f"adm_rej_{rid}")]]
+                await context.bot.send_message(OWNER_ID, admin_msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+            except:
+                await update.message.reply_text("❌ Формат: `вывод [сумма] [номер карты]`")
+
+# ==========================================
+# CALLBACK HANDLER (КНОПКИ)
+# ==========================================
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    u_id = q.from_user.id
+    data = q.data
+
+    if data.startswith("c_spin_"):
+        bet = int(data.split("_")[2])
+        res_text, success = await run_slots(u_id, bet)
+        kb = None
+        if success:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎰 Снова", callback_data=f"c_spin_{bet}"), 
+                                         InlineKeyboardButton("🛑 Стоп", callback_data="c_stop")]])
+        await q.edit_message_text(res_text, reply_markup=kb, parse_mode="Markdown")
+
+    elif data == "c_stop":
+        await q.edit_message_text("🛑 Игра закончена. Баланс сохранен.")
+
+    elif data == "do_work":
+        now = datetime.now()
+        if u_id in work_timers and now < work_timers[u_id] + timedelta(seconds=40):
+            return await q.answer("⏳ Ты еще не отдохнул от прошлой смены!", show_alert=True)
+        
+        update_balance(u_id, 80, "bonus")
+        work_timers[u_id] = now
+        await q.answer("⚒ Отработано! +80 Бонусов")
+        await q.edit_message_text("⚒ Смена закончена. Приходи позже!", 
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Работать еще", callback_data="do_work")]]))
+
+    elif data.startswith("adm_"):
+        # Логика админки (выплаты)
+        _, action, rid = data.split("_")
+        rid = int(rid)
+        req = withdraw_requests.get(rid)
+        if not req: return
+        
+        if action == "win":
+            await context.bot.send_message(req["u_id"], f"✅ Ваша выплата {req['rub']}₽ была успешно отправлена!")
+            await q.edit_message_text(q.message.text + "\n\nСТАТУС: ✅ ОПЛАЧЕНО")
+        else:
+            update_balance(req["u_id"], req["m"], "main")
+            update_balance(req["u_id"], req["b"], "bonus")
+            await context.bot.send_message(req["u_id"], "❌ Заявка на вывод отклонена. Средства вернулись на баланс.")
+            await q.edit_message_text(q.message.text + "\n\nСТАТУС: ❌ ОТКАЗАНО")
+        del withdraw_requests[rid]
+
+# ==========================================
+# ИНИЦИАЛИЗАЦИЯ И ЗАПУСК
+# ==========================================
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=30, read_timeout=30)).build()
-    
-    promo_conv = ConversationHandler(
-        entry_points=[CommandHandler("createpm", promo_start)],
+    app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=30)).build()
+
+    # Промокоды (диалог)
+    promo_handler = ConversationHandler(
+        entry_points=[CommandHandler("createpm", lambda u, c: (u.message.reply_text("Имя промо?"), PROMO_NAME)[1])],
         states={
-            PROMO_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, promo_get_name)],
-            PROMO_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, promo_get_time)],
-            PROMO_REWARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, promo_get_reward)],
+            PROMO_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: (c.user_data.update({'pn': u.message.text}), u.message.reply_text("Время? (1д, 5ч)"), PROMO_TIME)[2])],
+            PROMO_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: (c.user_data.update({'pt': u.message.text}), u.message.reply_text("Награда?"), PROMO_REWARD)[2])],
+            PROMO_REWARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: (active_promos.update({c.user_data['pn']: {'reward': int(u.message.text), 'expire': (datetime.now() + timedelta(seconds=parse_kryloxa_time(c.user_data['pt'])[0])).isoformat()}}), save_json(PROMOS_FILE, active_promos), u.message.reply_text("Готово!"), ConversationHandler.END)[3])]
         },
         fallbacks=[]
     )
 
-    app.add_handler(promo_conv)
-    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(promo_handler)
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("donate", donate_cmd))
     app.add_handler(CommandHandler("shop", donate_cmd))
     app.add_handler(CommandHandler("magaz", magaz_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]абота$"), work_command))
-    app.add_handler(CallbackQueryHandler(all_callbacks))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Kryloxa System в строю! Напиши /help")))
     
-    print(f"Kryloxa System v{BOT_VERSION} ЗАПУЩЕН!")
-    app.run_polling(drop_pending_updates=True)
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    print(">>> Kryloxa System v1.2.0: FULL POWER ON <<<")
+    app.run_polling()
