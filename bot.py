@@ -17,434 +17,449 @@ from telegram.ext import (
     MessageHandler, 
     filters, 
     CallbackQueryHandler, 
-    CommandHandler, 
-    ConversationHandler
+    CommandHandler
 )
 from telegram.request import HTTPXRequest
 
-# ==========================================
-# 1. КОНФИГУРАЦИЯ И НАСТРОЙКИ
-# ==========================================
+# ==============================================================================
+# 1. ГЛОБАЛЬНАЯ КОНФИГУРАЦИЯ
+# ==============================================================================
 TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
 OWNER_ID = 5679520675
-TESTER_ID = 782585931
-HELPER_ID = 8475300408
 
+# Финансовые настройки
 CARD_NUMBER = "2202 2084 1533 2171"
 SUPPORT_BOT_NAME = "kryloxaHelper_bot"
 MIN_WITHDRAW_KLC = 4000 
-CURRENCY_RATE = 0.06 
 
+# Экономические константы
+BASE_RATE = 0.06          # Курс: 1 KLC = 0.06 рубля
+MORTAL_COMMISSION = 0.65  # Комиссия 65% для обычных игроков (0.65)
+DONATOR_COMMISSION = 0.0  # Комиссия 0% для донатеров
+
+# Пути к файлам базы данных
 ECONOMY_FILE = "economy.json"
-RANKS_FILE = "ranks.json"
-PROMOS_FILE = "promos.json" 
-ACTIVATED_PROMOS_FILE = "activated_promos.json"
 DONATORS_FILE = "donators.json"
+RANKS_FILE = "ranks.json"
 
-# Состояния для диалога создания промокода
-PROMO_NAME, PROMO_TIME, PROMO_REWARD = range(3)
-
-# Настройки Казино
+# Настройки казино (Слоты)
 SLOTS_SYMBOLS = ["🍋", "🍒", "🔔", "💎", "7️⃣"]
+# Веса для шансов: Лимоны (часто), Семерки (0.1% шанс)
 SLOTS_WEIGHTS = [50, 30, 15, 4.9, 0.1] 
 MIN_BET_SLOTS = 500
 
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.INFO
 )
 
-# ==========================================
-# 2. РАБОТА С БАЗОЙ ДАННЫХ (JSON)
-# ==========================================
-def load_json(filename, default):
+# ==============================================================================
+# 2. СИСТЕМА ЗАГРУЗКИ И СОХРАНЕНИЯ ДАННЫХ
+# ==============================================================================
+def load_json_data(filename, default_value):
+    """Универсальная функция загрузки JSON файлов"""
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Превращаем строковые ID обратно в числа для удобства
-                return {int(k) if k.isdigit() else k: v for k, v in data.items()}
+                # Конвертируем ключи в числа, если это ID пользователей
+                return {int(k) if isinstance(k, str) and k.isdigit() else k: v for k, v in data.items()}
         except Exception as e:
-            logging.error(f"Ошибка загрузки {filename}: {e}")
-            return default
-    return default
+            logging.error(f"Ошибка при чтении файла {filename}: {e}")
+            return default_value
+    return default_value
 
-def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+def save_json_data(filename, data):
+    """Универсальная функция сохранения данных"""
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении файла {filename}: {e}")
 
-# Инициализация данных
-user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4, HELPER_ID: -1})
-user_balance = load_json(ECONOMY_FILE, {})
-active_promos = load_json(PROMOS_FILE, {})
-used_promo_db = load_json(ACTIVATED_PROMOS_FILE, {}) 
-donators = load_json(DONATORS_FILE, [])
+# Инициализация баз данных в оперативной памяти
+user_balance = load_json_data(ECONOMY_FILE, {})
+donators_list = load_json_data(DONATORS_FILE, []) # Список ID донатеров
+user_ranks = load_json_data(RANKS_FILE, {OWNER_ID: 4})
 
-# Временные данные (очищаются при перезагрузке)
-warns = {}
-work_timers = {}
-bonus_timers = {}
-withdraw_requests = {}
+# Временные словари (очищаются при перезапуске)
+withdraw_requests = {} # Активные заявки на вывод
+work_timers = {}       # Кулдаун на команду 'работа'
+bonus_timers = {}      # Кулдаун на команду 'бонус'
 
-# ==========================================
-# 3. ВСПОМОГАТЕЛЬНАЯ ЛОГИКА
-# ==========================================
-def get_user_stats(u_id):
-    if u_id not in user_balance:
-        user_balance[u_id] = {"main": 500, "bonus": 0}
-    # Конвертация из старого формата (если была просто цифра)
-    if isinstance(user_balance[u_id], int):
-        val = user_balance[u_id]
-        user_balance[u_id] = {"main": val, "bonus": 0}
-    return user_balance[u_id]
+# ==============================================================================
+# 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ЭКОНОМИКИ
+# ==============================================================================
+def get_user_stats(user_id):
+    """Получение баланса пользователя с созданием записи, если его нет"""
+    if user_id not in user_balance:
+        user_balance[user_id] = {"main": 500, "bonus": 0}
+    
+    # Исправление старого формата данных (если там было просто число)
+    if isinstance(user_balance[user_id], int):
+        old_val = user_balance[user_id]
+        user_balance[user_id] = {"main": old_val, "bonus": 0}
+        
+    return user_balance[user_id]
 
-def update_balance(u_id, amount, b_type="main"):
-    if u_id == OWNER_ID and amount < 0:
-        return 
-    stats = get_user_stats(u_id)
-    stats[b_type] += amount
-    if stats[b_type] < 0:
-        stats[b_type] = 0
-    save_json(ECONOMY_FILE, user_balance)
-
-def get_rank(user_id):
+def is_user_donator(user_id):
+    """Проверка наличия статуса донатера"""
     if user_id == OWNER_ID:
-        return 4
-    return user_ranks.get(user_id, 0)
+        return True
+    return user_id in donators_list
 
-def parse_time(text):
-    """Парсинг времени типа '1д', '5ч', '30м'"""
-    text = text.lower().strip()
-    match = re.search(r"(\d+)\s*([мчдг])", text)
-    if not match:
-        return None
-    amount = int(match.group(1))
-    unit = match.group(2)
-    if unit == 'м': return amount * 60
-    if unit == 'ч': return amount * 3600
-    if unit == 'д': return amount * 86400
-    if unit == 'г': return amount * 31536000
-    return None
-
-# ==========================================
-# 4. ИГРОВЫЕ ФУНКЦИИ (СЛОТЫ)
-# ==========================================
-async def run_slots_logic(u_id, bet):
-    stats = get_user_stats(u_id)
-    total = stats["main"] + stats["bonus"]
+def update_user_balance(user_id, amount, balance_type="main"):
+    """Изменение баланса (main - чистые, bonus - бонусы)"""
+    # Владелец не может уйти в минус
+    if user_id == OWNER_ID and amount < 0:
+        return
+        
+    stats = get_user_stats(user_id)
+    stats[balance_type] += amount
     
-    if total < bet:
-        return "❌ Недостаточно KLC на балансе!", False
+    # Защита от отрицательного баланса
+    if stats[balance_type] < 0:
+        stats[balance_type] = 0
+        
+    save_json_data(ECONOMY_FILE, user_balance)
 
-    # Списание: сначала бонусы, потом чистые
-    if stats["bonus"] >= bet:
-        update_balance(u_id, -bet, "bonus")
+# ==============================================================================
+# 4. ЯДРО КАЗИНО (МЕХАНИКА СЛОТОВ)
+# ==============================================================================
+async def execute_slots_spin(user_id, bet_amount):
+    """Логика вращения игрового автомата"""
+    stats = get_user_stats(user_id)
+    total_balance = stats["main"] + stats["bonus"]
+    
+    if total_balance < bet_amount:
+        return "❌ У вас недостаточно средств для этой ставки!", False
+    
+    # Списание ставки: сначала списываем с бонусного счета
+    if stats["bonus"] >= bet_amount:
+        update_user_balance(user_id, -bet_amount, "bonus")
     else:
-        rem = bet - stats["bonus"]
-        update_balance(u_id, -stats["bonus"], "bonus")
-        update_balance(u_id, -rem, "main")
+        # Если бонусов не хватает, списываем остаток с основного счета
+        rem_bet = bet_amount - stats["bonus"]
+        update_user_balance(user_id, -stats["bonus"], "bonus")
+        update_user_balance(user_id, -rem_bet, "main")
 
-    res = [random.choices(SLOTS_SYMBOLS, weights=SLOTS_WEIGHTS)[0] for _ in range(3)]
-    win = 0
+    # Генерация результата (3 барабана)
+    result = [random.choices(SLOTS_SYMBOLS, weights=SLOTS_WEIGHTS)[0] for _ in range(3)]
+    payout = 0
 
-    # Логика выигрыша
-    if res[0] == res[1] == res[2]:
-        if res[0] == "7️⃣": win = bet * 100
-        elif res[0] == "💎": win = bet * 50
-        else: win = bet * 15
-    elif (res[0] == res[1] or res[1] == res[2] or res[0] == res[2]):
-        if random.random() > 0.7: # 30% шанс на малый выигрыш при паре
-            win = int(bet * 2)
-
-    if win > 0:
-        update_balance(u_id, win, "main") # Выигрыш всегда в чистые
-        return f"🎰 `[ {' | '.join(res)} ]` \n\n🔥 **ПОБЕДА!**\nВы выиграли: +{win} KLC (Чистые)", True
+    # Проверка комбинаций
+    if result[0] == result[1] == result[2]:
+        # Три в ряд
+        if result[0] == "7️⃣":
+            payout = bet_amount * 200 # Джекпот!
+        elif result[0] == "💎":
+            payout = bet_amount * 25
+        else:
+            payout = bet_amount * 10
+    elif (result[0] == result[1] or result[1] == result[2] or result[0] == result[2]):
+        # Пара одинаковых символов (шанс 40% на выигрыш x1.5)
+        if random.random() < 0.4:
+            payout = int(bet_amount * 1.5)
     
-    return f"🎰 `[ {' | '.join(res)} ]` \n\n💀 **ПРОИГРЫШ**\nПопробуйте снова!", True
-
-# ==========================================
-# 5. КОМАНДЫ ПОЛЬЗОВАТЕЛЯ
-# ==========================================
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Kryloxa System v1.2.5 готова к работе!\nНапиши /help для списка команд.")
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📜 **СПИСОК КОМАНД**\n\n"
-        "💰 **Экономика:**\n"
-        "• `баланс` (или `б`) — твой кошелек\n"
-        "• `бонус` — ежедневный подарок\n"
-        "• `тп [сумма] [реплай]` — передать KLC\n"
-        "• `вывод [сумма] [карта]` — снять деньги\n\n"
-        "🎰 **Развлечения:**\n"
-        "• `слоты [ставка]` — казино\n"
-        "• `работа` — заработок бонусов в ЛС\n\n"
-        "🛍 **Магазин и Инфо:**\n"
-        "• `/magaz` — купить снятие мута/варна\n"
-        "• `/donate` — купить KLC\n"
-        "• `/donators` — список почетных игроков\n\n"
-        "🛡 **Модерация (для админов):**\n"
-        "• `инфа`, `молчи`, `скажи`, `бан`, `варн`"
+    # Обработка выигрыша
+    if payout > 0:
+        update_user_balance(user_id, payout, "main") # Выигрыш всегда в чистые KLC
+        msg = (
+            f"🎰 Результат: `[ {result[0]} | {result[1]} | {result[2]} ]` \n\n"
+            f"🎉 **ПОБЕДА!**\n"
+            f"Вы выиграли: +{payout} KLC (Чистые)"
+        )
+        return msg, True
+    
+    # Проигрыш
+    msg = (
+        f"🎰 Результат: `[ {result[0]} | {result[1]} | {result[2]} ]` \n\n"
+        f"💀 **ПРОИГРЫШ**\n"
+        f"Ставка уходит в банк казино. Попробуйте еще раз!"
     )
+    return msg, True
+
+# ==============================================================================
+# 5. ОБРАБОТЧИКИ КОМАНД ПОЛЬЗОВАТЕЛЕЙ
+# ==============================================================================
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие бота"""
+    await update.message.reply_text(
+        "👋 Добро пожаловать в Kryloxa System v2.0!\n"
+        "Я ваш персональный бот-казино с системой вывода средств.\n\n"
+        "Напишите /help, чтобы увидеть список всех команд."
+    )
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список доступных команд"""
+    help_text = (
+        "📜 **СПРАВОЧНИК КОМАНД**\n\n"
+        "💰 **Экономика и Баланс:**\n"
+        "• `баланс` (или `б`) — проверить состояние счета\n"
+        "• `бонус` — забрать ежедневный подарок\n"
+        "• `тп [сумма]` — перевести монеты (ответом на сообщение)\n\n"
+        "🎰 **Азартные Игры:**\n"
+        "• `слоты [ставка]` — запустить игровой аппарат\n"
+        "• `работа` — быстрый заработок бонусов\n\n"
+        "📤 **Вывод Средств:**\n"
+        "• `вывод [сумма] [карта]` — создать заявку на выплату\n\n"
+        "💎 **Для Донатеров:**\n"
+        "• `/donators` — список почетных участников\n"
+        "• `/donate` — как купить KLC и статус"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def cmd_donators(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вывод списка донатеров"""
+    if not donators_list:
+        return await update.message.reply_text("📜 Список донатеров пока пуст. Стань первым! /donate")
+    
+    text = "💎 **НАШИ VIP-КЛИЕНТЫ (0% КОМИССИИ):**\n\n"
+    for index, d_id in enumerate(donators_list, 1):
+        text += f"{index}. ID: `{d_id}`\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
-async def donators_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not donators:
-        return await update.message.reply_text("📜 Список донатеров пока пуст.")
+async def cmd_set_donator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: назначить донатера (через реплай)"""
+    if update.effective_user.id != OWNER_ID:
+        return # Только владелец может назначать
+
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("❌ Ошибка! Команду нужно писать в ответ на сообщение игрока.")
     
-    text = "💎 **ПОЧЕТНЫЕ ДОНАТЕРЫ ПРОЕКТА:**\n\n"
-    for i, name in enumerate(donators, 1):
-        text += f"{i}. {name}\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def donate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "<b>🏦 ПОПОЛНЕНИЕ БАЛАНСА</b>\n\n"
-        f"💳 Карта для оплаты: <code>{CARD_NUMBER}</code>\n\n"
-        "📦 <b>Прайс-лист:</b>\n"
-        "• 5,000 KLC — 300₽\n"
-        "• 10,000 KLC — 550₽\n\n"
-        f"⚠️ После оплаты скиньте чек в @{SUPPORT_BOT_NAME}"
-    )
-    kb = [[InlineKeyboardButton("📥 Отправить чек", url=f"https://t.me/{SUPPORT_BOT_NAME}")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u_id = update.effective_user.id
-    stats = get_user_stats(u_id)
-    total = stats["main"] + stats["bonus"]
+    target_user_id = update.message.reply_to_message.from_user.id
     
-    text = f"🛒 **МАГАЗИН KRYLOXA**\n💰 Твой баланс: {total} KLC\n\nВыбери товар:"
-    kb = [
-        [InlineKeyboardButton("🚫 Снять мут (1000 KLC)", callback_data="buy_unmute")],
-        [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    if target_user_id not in donators_list:
+        donators_list.append(target_user_id)
+        save_json_data(DONATORS_FILE, donators_list)
+        await update.message.reply_text(f"✅ УСПЕХ! Пользователь `{target_user_id}` теперь ДОНАТЕР.")
+    else:
+        await update.message.reply_text("❕ Этот пользователь уже имеет статус донатера.")
 
-# ==========================================
-# 6. ТЕКСТОВЫЙ ОБРАБОТЧИК (ОСНОВНАЯ ЛОГИКА)
-# ==========================================
-async def main_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==============================================================================
+# 6. ОСНОВНОЙ ТЕКСТОВЫЙ ОБРАБОТЧИК
+# ==============================================================================
+async def text_message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Маршрутизация текстовых команд (баланс, слоты, вывод и т.д.)"""
     if not update.message or not update.message.text:
         return
-
-    raw_text = update.message.text
-    text = raw_text.lower().strip()
-    user = update.effective_user
-    u_id = user.id
+    
+    raw_message = update.message.text
+    clean_text = raw_message.lower().strip()
+    user_info = update.effective_user
+    u_id = user_info.id
     stats = get_user_stats(u_id)
 
-    # --- БАЛАНС ---
-    if text in ["баланс", "б"]:
-        m_bal = "∞" if u_id == OWNER_ID else stats['main']
-        await update.message.reply_text(
-            f"👤 {user.first_name}, твой счет:\n"
-            f"💳 Чистые: {m_bal} KLC\n"
-            f"🎁 Бонусы: {stats['bonus']} KLC"
+    # --- КОМАНДА: БАЛАНС ---
+    if clean_text in ["баланс", "б"]:
+        status = "💎 ДОНАТЕР (0%)" if is_user_donator(u_id) else "👤 ОБЫЧНЫЙ (65%)"
+        balance_msg = (
+            f"👤 **Профиль:** {user_info.first_name}\n"
+            f"💳 **Чистые KLC:** {stats['main']}\n"
+            f"🎁 **Бонусы:** {stats['bonus']}\n"
+            f"🎭 **Статус:** {status}"
         )
+        await update.message.reply_text(balance_msg, parse_mode="Markdown")
 
-    # --- ЕЖЕДНЕВНЫЙ БОНУС ---
-    elif text == "бонус":
+    # --- КОМАНДА: БОНУС ---
+    elif clean_text == "бонус":
         now = datetime.now()
         if u_id in bonus_timers and now < bonus_timers[u_id] + timedelta(days=1):
-            delta = (bonus_timers[u_id] + timedelta(days=1)) - now
-            hours = delta.seconds // 3600
-            return await update.message.reply_text(f"❌ Бонус будет доступен через {hours}ч.")
+            return await update.message.reply_text("❌ Вы уже забирали бонус сегодня. Приходите завтра!")
         
-        amt = random.randint(150, 500)
-        update_balance(u_id, amt, "bonus")
+        bonus_value = random.randint(200, 600)
+        update_user_balance(u_id, bonus_value, "bonus")
         bonus_timers[u_id] = now
-        await update.message.reply_text(f"🎁 Ты получил {amt} бонусных KLC!")
+        await update.message.reply_text(f"🎁 Ежедневный бонус зачислен: +{bonus_value} KLC")
 
-    # --- ПЕРЕДАЧА ДЕНЕГ (ТП) ---
-    elif text.startswith("тп "):
+    # --- КОМАНДА: СЛОТЫ ---
+    elif clean_text.startswith("слоты "):
         try:
-            parts = text.split()
-            amount = int(parts[1])
-            if not update.message.reply_to_message:
-                return await update.message.reply_text("❌ Ответь на сообщение того, кому хочешь передать!")
+            bet_parts = clean_text.split()
+            if len(bet_parts) < 2: return
             
-            target_id = update.message.reply_to_message.from_user.id
-            if stats["main"] < amount:
-                return await update.message.reply_text("❌ У тебя нет столько 'чистых' KLC!")
+            bet_value = int(bet_parts[1])
+            if bet_value < MIN_BET_SLOTS:
+                return await update.message.reply_text(f"❌ Минимальная ставка в казино: {MIN_BET_SLOTS} KLC")
             
-            update_balance(u_id, -amount, "main")
-            update_balance(target_id, amount, "main")
-            await update.message.reply_text(f"✅ Ты передал {amount} KLC пользователю {update.message.reply_to_message.from_user.first_name}")
-        except:
-            await update.message.reply_text("❌ Ошибка. Пиши: `тп [сумма]` (реплаем)")
-
-    # --- КАЗИНО (СЛОТЫ) ---
-    elif text.startswith("слоты "):
-        try:
-            bet = int(text.split()[1])
-            if bet < MIN_BET_SLOTS:
-                return await update.message.reply_text(f"❌ Мин. ставка: {MIN_BET_SLOTS}")
+            # Запуск логики
+            response_text, is_playable = await execute_slots_spin(u_id, bet_value)
             
-            res_txt, success = await run_slots_logic(u_id, bet)
-            kb = None
-            if success:
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🎰 Снова", callback_data=f"spin_{bet}"),
-                    InlineKeyboardButton("🛑 Стоп", callback_data="stop_game")
+            # Создание клавиатуры для повтора
+            keyboard = None
+            if is_playable:
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎰 Крутить еще", callback_data=f"spin_again_{bet_value}"),
+                    InlineKeyboardButton("🛑 Стоп", callback_data="spin_stop")
                 ]])
-            await update.message.reply_text(res_txt, reply_markup=kb, parse_mode="Markdown")
-        except:
-            await update.message.reply_text("❌ Пиши: `слоты [ставка]`")
+            
+            await update.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, укажите ставку числом. Пример: `слоты 1000`")
 
-    # --- ВЫВОД СРЕДСТВ ---
-    elif text.startswith("вывод "):
+    # --- КОМАНДА: ВЫВОД СРЕДСТВ (HARDCORE LOGIC) ---
+    elif clean_text.startswith("вывод "):
         try:
-            parts = raw_text.split()
-            amount = int(parts[1])
-            card_info = " ".join(parts[2:])
+            args = raw_message.split()
+            if len(args) < 3:
+                return await update.message.reply_text("❌ Формат: `вывод [сумма] [номер карты]`")
             
-            if amount < MIN_WITHDRAW_KLC:
-                return await update.message.reply_text(f"❌ Минимальный вывод: {MIN_WITHDRAW_KLC} KLC")
+            withdraw_amount = int(args[1])
+            card_details = " ".join(args[2:])
             
-            if (stats["main"] + stats["bonus"]) < amount:
-                return await update.message.reply_text("❌ Недостаточно средств!")
-
-            # Списание
-            b_part = min(amount, stats["bonus"])
-            m_part = amount - b_part
-            update_balance(u_id, -m_part, "main")
-            update_balance(u_id, -b_part, "bonus")
-
-            # Расчет в рублях
-            rub = int(((m_part * CURRENCY_RATE) * 0.4) + ((b_part * CURRENCY_RATE) * 0.6))
-            req_id = random.randint(1000, 9999)
-            withdraw_requests[req_id] = {"u_id": u_id, "rub": rub, "m": m_part, "b": b_part}
-
-            await update.message.reply_text(f"✅ Заявка #{req_id} на {rub}₽ создана и отправлена админу.")
+            if withdraw_amount < MIN_WITHDRAW_KLC:
+                return await update.message.reply_text(f"❌ Минимальная сумма вывода: {MIN_WITHDRAW_KLC} KLC")
             
-            # Уведомление админу
-            admin_text = (
-                f"💰 **НОВАЯ ЗАЯВКА НА ВЫВОД #{req_id}**\n"
-                f"👤 Игрок: {user.first_name} (ID: {u_id})\n"
-                f"💵 Сумма: {rub}₽\n"
-                f"💳 Карта: `{card_info}`"
+            if (stats["main"] + stats["bonus"]) < withdraw_amount:
+                return await update.message.reply_text("❌ У вас недостаточно монет для вывода такой суммы!")
+
+            # ЗАМОРОЗКА СРЕДСТВ: Списываем монеты мгновенно
+            if stats["main"] >= withdraw_amount:
+                update_user_balance(u_id, -withdraw_amount, "main")
+            else:
+                remaining_debt = withdraw_amount - stats["main"]
+                update_user_balance(u_id, -stats["main"], "main")
+                update_user_balance(u_id, -remaining_debt, "bonus")
+
+            # РАСЧЕТ ИТОГОВОЙ СУММЫ К ВЫПЛАТЕ (Комиссии)
+            if is_user_donator(u_id):
+                # Донатеры получают всё (0% комиссия)
+                rub_payout = int(withdraw_amount * BASE_RATE)
+                commission_label = "0% (VIP)"
+            else:
+                # Обычные игроки теряют 65% (100% - 65% = 35% чистого дохода)
+                rub_payout = int(withdraw_amount * BASE_RATE * (1 - MORTAL_COMMISSION))
+                commission_label = "65% (Стандартная)"
+
+            request_id = random.randint(1000, 9999)
+            # Сохраняем заявку во временную память
+            withdraw_requests[request_id] = {
+                "u_id": u_id, 
+                "amount_klc": withdraw_amount, 
+                "amount_rub": rub_payout
+            }
+
+            await update.message.reply_text(f"✅ Заявка #{request_id} создана. Ожидайте подтверждения от администратора.")
+
+            # Уведомление Владельцу (OWNER_ID)
+            admin_notification = (
+                f"💰 **НОВАЯ ЗАЯВКА НА ВЫПЛАТУ #{request_id}**\n\n"
+                f"👤 Игрок: {user_info.first_name} (ID: `{u_id}`)\n"
+                f"💎 Сумма вывода: {withdraw_amount} KLC\n"
+                f"🎭 Комиссия системы: {commission_label}\n\n"
+                f"💵 **НУЖНО СКИНУТЬ НА КАРТУ: {rub_payout} РУБ**\n"
+                f"💳 Реквизиты: `{card_details}`"
             )
-            kb = [[
-                InlineKeyboardButton("✅ Оплачено", callback_data=f"adm_pay_{req_id}"),
-                InlineKeyboardButton("❌ Отказ", callback_data=f"adm_rej_{req_id}")
-            ]]
-            await context.bot.send_message(OWNER_ID, admin_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-        except:
-            await update.message.reply_text("❌ Формат: `вывод [сумма] [номер карты]`")
-
-    # --- МОДЕРАЦИЯ ---
-    elif text == "инфа":
-        target = update.message.reply_to_message.from_user if update.message.reply_to_message else user
-        t_stats = get_user_stats(target.id)
-        t_rank = get_rank(target.id)
-        info = (
-            f"👤 **ИНФОРМАЦИЯ: {target.first_name}**\n"
-            f"🆔 ID: `{target.id}`\n"
-            f"⭐ Ранг: {t_rank}\n"
-            f"💳 Чистые: {t_stats['main']} KLC\n"
-            f"🎁 Бонусы: {t_stats['bonus']} KLC\n"
-            f"⚠️ Варны: {warns.get(target.id, 0)}/3"
-        )
-        await update.message.reply_text(info, parse_mode="Markdown")
-
-    elif text.startswith("молчи"):
-        if get_rank(u_id) < 1: return
-        if not update.message.reply_to_message: return
-        
-        target = update.message.reply_to_message.from_user
-        seconds = parse_time(text.replace("молчи", ""))
-        if not seconds: seconds = 3600
-        
-        try:
-            until = datetime.now() + timedelta(seconds=seconds)
-            await context.bot.restrict_chat_member(
-                update.message.chat_id, 
-                target.id, 
-                permissions=ChatPermissions(can_send_messages=False),
-                until_date=until
-            )
-            await update.message.reply_text(f"🔇 {target.first_name} отправлен в мут.")
-        except:
-            await update.message.reply_text("❌ Ошибка прав.")
-
-# ==========================================
-# 7. ОБРАБОТКА НАЖАТИЙ (CALLBACK)
-# ==========================================
-async def query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    u_id = q.from_user.id
-    data = q.data
-
-    # Игровые кнопки
-    if data.startswith("spin_"):
-        bet = int(data.split("_")[1])
-        res_txt, success = await run_slots_logic(u_id, bet)
-        kb = None
-        if success:
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🎰 Снова", callback_data=f"spin_{bet}"),
-                InlineKeyboardButton("🛑 Стоп", callback_data="stop_game")
+            
+            admin_keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Оплачено", callback_data=f"adm_confirm_{request_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"adm_cancel_{request_id}")
             ]])
-        await q.edit_message_text(res_txt, reply_markup=kb, parse_mode="Markdown")
+            
+            await context.bot.send_message(
+                OWNER_ID, 
+                admin_notification, 
+                reply_markup=admin_keyboard, 
+                parse_mode="Markdown"
+            )
 
-    elif data == "stop_game":
-        await q.edit_message_text("🛑 Игра окончена. Твой баланс в безопасности!")
+        except ValueError:
+            await update.message.reply_text("❌ Ошибка в сумме. Используйте цифры.")
 
-    # Работа
-    elif data == "do_work":
-        now = datetime.now()
-        if u_id in work_timers and now < work_timers[u_id] + timedelta(seconds=40):
-            return await q.answer("⏳ Ты еще не отдохнул! Подожди немного.", show_alert=True)
+# ==============================================================================
+# 7. ОБРАБОТЧИК ИНЛАЙН-КНОПОК (CALLBACKS)
+# ==============================================================================
+async def global_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка всех нажатий на кнопки в боте"""
+    query = update.callback_query
+    u_id = query.from_user.id
+    callback_data = query.data
+
+    # --- КНОПКИ КАЗИНО ---
+    if callback_data.startswith("spin_again_"):
+        bet_to_repeat = int(callback_data.split("_")[2])
+        new_msg, is_ok = await execute_slots_spin(u_id, bet_to_repeat)
         
-        update_balance(u_id, 75, "bonus")
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎰 Крутить еще", callback_data=f"spin_again_{bet_to_repeat}"),
+            InlineKeyboardButton("🛑 Стоп", callback_data="spin_stop")
+        ]]) if is_ok else None
+        
+        await query.edit_message_text(new_msg, reply_markup=kb, parse_mode="Markdown")
+
+    elif callback_data == "spin_stop":
+        await query.edit_message_text("🛑 Вы вышли из игры. Ваш текущий баланс сохранен.")
+
+    # --- КНОПКИ РАБОТЫ ---
+    elif callback_data == "do_work_task":
+        now = datetime.now()
+        if u_id in work_timers and now < work_timers[u_id] + timedelta(seconds=45):
+            return await query.answer("⏳ Вы слишком устали. Подождите 45 секунд!", show_alert=True)
+        
+        earned = random.randint(50, 120)
+        update_user_balance(u_id, earned, "bonus")
         work_timers[u_id] = now
-        await q.answer("⚒ Отработано! +75 Бонусных KLC")
-        await q.edit_message_text(
-            "⚒ Смена закончена. Приходи через 40 секунд!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Начать еще раз", callback_data="do_work")]])
+        await query.answer(f"⚒ Работа завершена! Получено {earned} бонусов.")
+        await query.edit_message_text(
+            f"⚒ Смена окончена! Вы заработали {earned} бонусных KLC.\nСледующая смена через 45 секунд.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Работать снова", callback_data="do_work_task")]])
         )
 
-    # Админка вывода
-    elif data.startswith("adm_"):
-        _, action, rid = data.split("_")
+    # --- АДМИН-КНОПКИ ВЫВОДА ---
+    elif callback_data.startswith("adm_"):
+        _, action, rid = callback_data.split("_")
         rid = int(rid)
-        req = withdraw_requests.get(rid)
-        if not req: return
+        request_data = withdraw_requests.get(rid)
         
-        if action == "pay":
-            await context.bot.send_message(req["u_id"], f"✅ Ваша выплата {req['rub']}₽ была отправлена на карту!")
-            await q.edit_message_text(q.message.text + "\n\n✅ СТАТУС: ОПЛАЧЕНО")
-        else:
-            update_balance(req["u_id"], req["m"], "main")
-            update_balance(req["u_id"], req["b"], "bonus")
-            await context.bot.send_message(req["u_id"], "❌ Админ отклонил вашу заявку. KLC вернулись на баланс.")
-            await q.edit_message_text(q.message.text + "\n\n❌ СТАТУС: ОТКЛОНЕНО")
+        if not request_data:
+            return await query.answer("❌ Заявка не найдена или уже была обработана.")
         
+        target_player_id = request_data["u_id"]
+        
+        if action == "confirm":
+            # Уведомляем игрока об успехе
+            await context.bot.send_message(
+                target_player_id, 
+                f"✅ Ваша заявка #{rid} исполнена! Деньги отправлены на ваши реквизиты. Спасибо за игру!"
+            )
+            await query.edit_message_text(query.message.text + "\n\n✅ **ИТОГ: ВЫПЛАЧЕНО**")
+        
+        elif action == "cancel":
+            # Возвращаем монеты игроку (в Чистые KLC)
+            update_user_balance(target_player_id, request_data["amount_klc"], "main")
+            await context.bot.send_message(
+                target_player_id, 
+                f"❌ Ваша заявка #{rid} была отклонена администратором. Все KLC возвращены на ваш баланс."
+            )
+            await query.edit_message_text(query.message.text + "\n\n❌ **ИТОГ: ОТКАЗАНО (СРЕДСТВА ВОЗВРАЩЕНЫ)**")
+        
+        # Удаляем заявку из списка активных
         del withdraw_requests[rid]
 
-# ==========================================
+# ==============================================================================
 # 8. ЗАПУСК БОТА
-# ==========================================
+# ==============================================================================
 if __name__ == "__main__":
-    # Создаем приложение
-    app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=30)).build()
+    # Инициализация приложения
+    bot_app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=30)).build()
 
-    # Добавляем команды
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("donate", donate_cmd))
-    app.add_handler(CommandHandler("magaz", magaz_cmd))
-    app.add_handler(CommandHandler("donators", donators_cmd))
+    # Регистрация команд через /
+    bot_app.add_handler(CommandHandler("start", cmd_start))
+    bot_app.add_handler(CommandHandler("help", cmd_help))
+    bot_app.add_handler(CommandHandler("donators", cmd_donators))
+    bot_app.add_handler(CommandHandler("setdonator", cmd_set_donator))
     
-    # Работа (через слово в чате)
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]абота$"), 
-        lambda u, c: u.message.reply_text("⚒ Нажми кнопку, чтобы начать смену:", 
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Работать", callback_data="do_work")]]))))
+    # Регистрация текстовой "Работы"
+    bot_app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^[Рр]абота$"), 
+        lambda u, c: u.message.reply_text("⚒ Нажмите на кнопку, чтобы начать смену и получить бонусы:", 
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Начать работу", callback_data="do_work_task")]]))))
 
-    # Коллбэки и Текст
-    app.add_handler(CallbackQueryHandler(query_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_text_handler))
+    # Регистрация обработчика нажатий
+    bot_app.add_handler(CallbackQueryHandler(global_callback_handler))
     
-    print(">>> Kryloxa System v1.2.5: ПОЛНЫЙ ЗАПУСК <<<")
-    app.run_polling()
+    # Регистрация основного текстового движка (должен быть последним)
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_router))
+    
+    print("--- KRYLOXA SYSTEM v2.0 СТАТУС: ЗАПУЩЕНО ---")
+    bot_app.run_polling()
