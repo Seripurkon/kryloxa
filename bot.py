@@ -16,14 +16,23 @@ TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
 OWNER_ID = 5679520675
 TESTER_ID = 782585931
 HELPER_ID = 8475300408
+
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
 PROMOS_FILE = "promos.json" 
-ACTIVATED_PROMOS_FILE = "activated_promos.json" # Новая БД для защиты
-BOT_VERSION = "0.9.8" # ECONOMY 2.0 FULL FIXED
+ACTIVATED_PROMOS_FILE = "activated_promos.json"
+DONATORS_FILE = "donators.json" # Файл для донатеров
+BOT_VERSION = "1.0.0" # ECONOMY 2.0 + CASINO INTEGRATION
 
 # Состояния для промокода
 PROMO_NAME, PROMO_TIME, PROMO_REWARD = range(3)
+
+# Настройки Казино и Экономики 2.0
+SLOTS_SYMBOLS = ["🍋", "🍒", "🔔", "💎", "7️⃣"]
+SLOTS_WEIGHTS = [50, 30, 15, 4.9, 0.1] 
+MIN_BET_SLOTS = 500
+CURRENCY_RATE = 0.06 # 1 KLC = 0.06 руб
+MAX_DAILY_WITHDRAW = 10000
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -62,28 +71,85 @@ def save_json(filename, data):
 user_ranks = load_json(RANKS_FILE, {OWNER_ID: 4, TESTER_ID: 4, HELPER_ID: -1})
 user_balance = load_json(ECONOMY_FILE, {})
 active_promos = load_json(PROMOS_FILE, {})
-# Структура: {"название_промо": [id_user1, id_user2]}
 used_promo_db = load_json(ACTIVATED_PROMOS_FILE, {}) 
+donators = load_json(DONATORS_FILE, [])
+
 warns = {}
 roulette_games = {}
 daily_stats = {}
 bonus_timers = {}
 work_timers = {}
+withdraw_requests = {}
 
 def get_rank(user_id):
     if user_id == OWNER_ID: return 4
     return user_ranks.get(user_id, 0)
+
+# --- УМНАЯ ЭКОНОМИКА 2.0 (АВТО-КОНВЕРТАЦИЯ) ---
+def get_user_stats(u_id):
+    if u_id not in user_balance:
+        user_balance[u_id] = {"main": 500, "bonus": 0}
+    
+    # Конвертируем старый формат (число) в новый (словарь)
+    if isinstance(user_balance[u_id], int):
+        old_val = user_balance[u_id]
+        user_balance[u_id] = {"main": old_val, "bonus": 0}
+        save_json(ECONOMY_FILE, user_balance)
+        
+    return user_balance[u_id]
+
+def update_balance(u_id, amount, b_type="main"):
+    if u_id == OWNER_ID and amount < 0: return # Овнер не уходит в минус
+    stats = get_user_stats(u_id)
+    stats[b_type] += amount
+    if stats[b_type] < 0: stats[b_type] = 0
+    save_json(ECONOMY_FILE, user_balance)
+
+def get_slots_kb(bet):
+    kb = [[InlineKeyboardButton("🎰 Крутить снова", callback_data=f"c_spin_{bet}")],
+          [InlineKeyboardButton("🛑 Стоп", callback_data="c_stop")]]
+    return InlineKeyboardMarkup(kb)
 
 def reload_chamber(g):
     chamber = [True, True, True, False, False, False]
     random.shuffle(chamber)
     g['chamber'] = chamber
 
+# --- ЛОГИКА КАЗИНО ---
+async def run_slots(u_id, bet):
+    stats = get_user_stats(u_id)
+    total = stats["main"] + stats["bonus"]
+    
+    if total < bet:
+        return "❌ Недостаточно KLC на балансах!", False
+
+    # Списание: сначала бонусы, потом основной
+    if stats["bonus"] >= bet:
+        update_balance(u_id, -bet, "bonus")
+    else:
+        rem = bet - stats["bonus"]
+        update_balance(u_id, -stats["bonus"], "bonus")
+        update_balance(u_id, -rem, "main")
+
+    res = [random.choices(SLOTS_SYMBOLS, weights=SLOTS_WEIGHTS)[0] for _ in range(3)]
+    win = 0
+    if res[0] == res[1] == res[2]:
+        win = bet * 200 if res[0] == "7️⃣" else (bet * 25 if res[0] == "💎" else bet * 10)
+    elif (res[0] == res[1] or res[1] == res[2] or res[0] == res[2]) and random.random() > 0.6:
+        win = int(bet * 1.5)
+
+    if win > 0:
+        update_balance(u_id, win, "main") # Выигрыш идет в ЧИСТЫЙ баланс
+        return f"🎰 `[ {res[0]} | {res[1]} | {res[2]} ]` \n\n✅ **ВИН!** +{win} KLC (в чистый баланс!)", True
+    return f"🎰 `[ {res[0]} | {res[1]} | {res[2]} ]` \n\n❌ **Мимо!**", True
+
 # --- ПРОФИЛЬ ---
 async def show_profile(update: Update, user):
     u_id = user.id
     rank = str(get_rank(u_id))
-    bal_text = "∞ (Owner)" if u_id == OWNER_ID else f"{user_balance.get(u_id, 0)} KLC"
+    stats = get_user_stats(u_id)
+    
+    bal_main = "∞" if u_id == OWNER_ID else stats['main']
     if u_id == HELPER_ID: rank += " Tester"
     elif u_id == TESTER_ID: rank += " The Main Tester"
 
@@ -91,7 +157,8 @@ async def show_profile(update: Update, user):
         f"👤 Профиль пользователя {user.first_name}:\n"
         f"🆔 ID: `{u_id}`\n"
         f"⭐️ Ранг: {rank}\n"
-        f"💰 Баланс: {bal_text}\n"
+        f"💳 Чистый баланс: {bal_main} KLC\n"
+        f"🎁 Бонусный баланс: {stats['bonus']} KLC\n"
         f"⚠️ Варны: {warns.get(u_id, 0)}/3\n"
         f"────────────────\n"
         f"🤖 Версия: `{BOT_VERSION}`"
@@ -108,6 +175,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🕹 **Меню:** /start, /help, /magaz\n"
         "💰 **Экономика 2.0:** баланс, бонус, тп, обо мне, передать [сумма]\n"
         "⚒ **Фарм:** `работа` (только в ЛС бота)\n"
+        "🎰 **Казино:** `слоты [ставка]`, `вывод [сумма] [карта]`\n"
         "🎫 **Промо:** `Промо: [код]`\n"
         "🛡 **Модер:** инфа, молчи, скажи, бан, варн\n"
         "🎲 **Игра:** Рулетка (ответом)"
@@ -116,8 +184,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def magaz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    bal = user_balance.get(user.id, 0) if user.id != OWNER_ID else "∞"
-    text = f"🛒 **Kryloxa Shop**\n💰 Баланс: {bal} KLC\nВыберите услугу:"
+    stats = get_user_stats(user.id)
+    bal = "∞" if user.id == OWNER_ID else (stats['main'] + stats['bonus'])
+    text = f"🛒 **Kryloxa Shop**\n💰 Общий баланс: {bal} KLC\nВыберите услугу:"
     kb = [[InlineKeyboardButton("🚫 Снять мут (1000 KLC)", callback_data="buy_unmute")],
           [InlineKeyboardButton("⚠️ Снять варн (500 KLC)", callback_data="buy_unwarn")]]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
@@ -140,7 +209,7 @@ async def promo_get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return PROMO_TIME
     context.user_data['temp_promo_expire'] = (datetime.now() + timedelta(seconds=seconds)).isoformat()
     context.user_data['temp_promo_timetext'] = time_text
-    await update.message.reply_text("3) Сколько KLC будут выдано активаторам?")
+    await update.message.reply_text("3) Сколько БОНУСНЫХ KLC будут выдано активаторам?")
     return PROMO_REWARD
 
 async def promo_get_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -148,11 +217,10 @@ async def promo_get_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reward = int(update.message.text)
         name = context.user_data['temp_promo_name']
         active_promos[name] = {"reward": reward, "expire": context.user_data['temp_promo_expire']}
-        # Создаем пустой список использовавших в БД
         used_promo_db[name] = [] 
         save_json(PROMOS_FILE, active_promos)
         save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
-        await update.message.reply_text(f"✅ Поздравляю вы создали промокод \"{name}\"\n⏳ Действует данный промокод: {context.user_data['temp_promo_timetext']}\n💰 Количество KLC за активацию: {reward}")
+        await update.message.reply_text(f"✅ Поздравляю вы создали промокод \"{name}\"\n⏳ Действует: {context.user_data['temp_promo_timetext']}\n🎁 Количество: {reward} Бонусных KLC")
         return ConversationHandler.END
     except:
         await update.message.reply_text("❌ Введите числовое значение.")
@@ -163,48 +231,78 @@ async def work_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return await update.message.reply_text("❌ Команда 'работа' работает только в личных сообщениях со мной!")
     kb = [[InlineKeyboardButton("⚒ Начать смену", callback_data="do_work")]]
-    await update.message.reply_text("🏭 Завод ждет! Нажимай на кнопку, чтобы заработать KLC:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("🏭 Завод ждет! Нажимай на кнопку, чтобы заработать бонусные KLC:", reply_markup=InlineKeyboardMarkup(kb))
 
 # --- ОБРАБОТКА ВСЕХ КНОПОК ---
 async def all_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     u_id = q.from_user.id
     
-    # Кнопка работы
+    # Работа
     if q.data == "do_work":
         now = datetime.now()
         last_work = work_timers.get(u_id)
         if last_work and now < last_work + timedelta(seconds=30):
             wait = int((last_work + timedelta(seconds=30) - now).total_seconds())
             return await q.answer(f"⏳ Слишком рано! Жди еще {wait} сек.", show_alert=True)
-        user_balance[u_id] = user_balance.get(u_id, 0) + 50
+        update_balance(u_id, 50, "bonus")
         work_timers[u_id] = now
-        save_json(ECONOMY_FILE, user_balance)
-        await q.answer("💰 +50 KLC заработано!")
-        return await q.edit_message_text("⚒ Смена отработана! Ты заработал 50 KLC.\nСледующая доступна через 30 секунд.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Работать еще", callback_data="do_work")]]))
+        await q.answer("🎁 +50 Бонусных KLC заработано!")
+        return await q.edit_message_text("⚒ Смена отработана! Ты заработал 50 Бонусных KLC.\nСледующая доступна через 30 секунд.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚒ Работать еще", callback_data="do_work")]]))
 
-    # Магазин
+    # Магазин (Списание сначала с бонусов, потом с мейна)
     if q.data.startswith("buy_"):
-        bal = user_balance.get(u_id, 0)
+        stats = get_user_stats(u_id)
+        total = stats["main"] + stats["bonus"]
         full_perms = ChatPermissions(can_send_messages=True, can_send_audios=True, can_send_documents=True, can_send_photos=True, can_send_videos=True, can_send_video_notes=True, can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_change_info=True, can_invite_users=True, can_pin_messages=True, can_manage_topics=True)
-        if q.data == "buy_unmute":
-            if u_id == OWNER_ID or bal >= 1000:
-                if u_id != OWNER_ID: user_balance[u_id] -= 1000
-                save_json(ECONOMY_FILE, user_balance)
+        
+        cost = 1000 if q.data == "buy_unmute" else 500
+        
+        if u_id == OWNER_ID or total >= cost:
+            if q.data == "buy_unwarn" and warns.get(u_id, 0) == 0:
+                return await q.answer("❌ У вас нет варнов.")
+            
+            if u_id != OWNER_ID:
+                if stats["bonus"] >= cost: update_balance(u_id, -cost, "bonus")
+                else:
+                    rem = cost - stats["bonus"]
+                    update_balance(u_id, -stats["bonus"], "bonus")
+                    update_balance(u_id, -rem, "main")
+
+            if q.data == "buy_unmute":
                 try:
                     await context.bot.restrict_chat_member(q.message.chat_id, u_id, permissions=full_perms)
                     await q.answer("✅ Ограничения сняты (Full)!", show_alert=True)
                 except: await q.answer("❌ Ошибка прав.")
-            else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
-        elif q.data == "buy_unwarn":
-            if u_id == OWNER_ID or bal >= 500:
-                if warns.get(u_id, 0) > 0:
-                    if u_id != OWNER_ID: user_balance[u_id] -= 500
-                    warns[u_id] -= 1
-                    save_json(ECONOMY_FILE, user_balance)
-                    await q.answer("✅ Варн снят!", show_alert=True)
-                else: await q.answer("❌ У вас нет варнов.")
-            else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
+            elif q.data == "buy_unwarn":
+                warns[u_id] -= 1
+                await q.answer("✅ Варн снят!", show_alert=True)
+        else: await q.answer("❌ Недостаточно средств на балансах!", show_alert=True)
+        return
+
+    # Слоты и Админ-Вывод
+    if q.data.startswith("c_spin_"):
+        bet = int(q.data.split("_")[2])
+        res_text, success = await run_slots(u_id, bet)
+        await q.edit_message_text(res_text, reply_markup=get_slots_kb(bet) if success else None, parse_mode="Markdown")
+    
+    elif q.data == "c_stop":
+        await q.edit_message_text("🛑 Игра завершена.")
+
+    elif q.data.startswith("adm_"):
+        action, rid = q.data.split("_")[1], int(q.data.split("_")[2])
+        if rid not in withdraw_requests: return await q.answer("Заявка не найдена")
+        req = withdraw_requests[rid]
+        
+        if action == "win":
+            await context.bot.send_message(req["u_id"], f"✅ Выплата {req['rub']} руб. успешно отправлена!")
+        else:
+            update_balance(req["u_id"], req["m"], "main")
+            update_balance(req["u_id"], req["b"], "bonus")
+            await context.bot.send_message(req["u_id"], "❌ Вывод отклонен. KLC вернулись.")
+        
+        del withdraw_requests[rid]
+        await q.edit_message_text(q.message.text + "\n\n✅ ОБРАБОТАНО")
         return
 
     # Рулетка ставки
@@ -245,16 +343,24 @@ async def all_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.ban_chat_member(q.message.chat_id, loser_id, until_date=datetime.now() + timedelta(days=1))
                     pun = f"🚫 {l_name} ЗАБАНЕН на день!"
                 elif bet == "klc":
-                    if loser_id != OWNER_ID: user_balance[loser_id] = user_balance.get(loser_id, 0) - 100
-                    user_balance[winner_id] = user_balance.get(winner_id, 0) + 100
-                    save_json(ECONOMY_FILE, user_balance)
-                    pun = f"💰 {l_name} теряет 100 KLC, а {w_name} их забирает!"
+                    if loser_id != OWNER_ID: 
+                        # Списываем со счета чистого баланса
+                        stats_l = get_user_stats(loser_id)
+                        if stats_l["main"] >= 100:
+                            update_balance(loser_id, -100, "main")
+                        elif (stats_l["main"] + stats_l["bonus"]) >= 100:
+                            rem = 100 - stats_l["bonus"]
+                            update_balance(loser_id, -stats_l["bonus"], "bonus")
+                            if rem > 0: update_balance(loser_id, -rem, "main")
+                    update_balance(winner_id, 100, "main")
+                    pun = f"💰 {l_name} теряет 100 KLC, а {w_name} их забирает в чистый баланс!"
             except: pun = "⚠️ Ошибка прав."
             await q.edit_message_text(f"{msg_txt}\n\n🏆 **Победил {w_name}!**\n{pun}", parse_mode="Markdown")
             del roulette_games[g_id]
         else:
             if not g['chamber']: reload_chamber(g)
             await update_ui(q, g_id, msg_txt)
+    await q.answer()
 
 async def update_ui(q, g_id, status):
     g = roulette_games[g_id]
@@ -276,43 +382,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     main_cmd = cmd_parts[0] if cmd_parts else ""
 
     user, chat_id, msg = update.effective_user, update.effective_chat.id, update.message.reply_to_message
+    stats = get_user_stats(user.id)
 
     if user.id not in daily_stats: daily_stats[user.id] = {"name": user.first_name, "count": 0}
     daily_stats[user.id]["count"] += 1
 
-    # АКТИВАЦИЯ ПРОМОКОДА (С ЗАЩИТОЙ ОТ ПОВТОРНОГО ИСПОЛЬЗОВАНИЯ)
+    # АКТИВАЦИЯ ПРОМОКОДА
     if first_line.startswith("промо:"):
         code = full_text.replace("Промо:", "").replace("промо:", "").strip()
         u_id = user.id
-        
         if code in active_promos:
-            # Инициализация списка в новой БД, если он пуст (для старых кодов)
             if code not in used_promo_db:
                 used_promo_db[code] = []
                 save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
             
-            # ПРОВЕРКА: Активировал ли этот юзер код ранее?
             if u_id in used_promo_db[code]:
                 return await update.message.reply_text("❌ Брат, халява только один раз! Ты уже получил KLC по этому коду.")
 
             data = active_promos[code]
-            # Проверка времени жизни кода
             if datetime.now() < datetime.fromisoformat(data['expire']):
-                # ВЫДАЧА НАГРАДЫ
-                user_balance[u_id] = user_balance.get(u_id, 0) + data['reward']
-                # ЗАПИСЬ АКТИВАЦИИ: Добавляем юзера в список
+                update_balance(u_id, data['reward'], "bonus") # Выдаем в бонусы
                 used_promo_db[code].append(u_id)
-                
-                # Сохранение всех БД
-                save_json(ECONOMY_FILE, user_balance)
                 save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
-                
-                await update.message.reply_text(f"🎫 Промокод активирован! Вы получили {data['reward']} KLC 💰")
+                await update.message.reply_text(f"🎫 Промокод активирован! Вы получили {data['reward']} Бонусных KLC 🎁")
             else:
                 del active_promos[code]
-                # Можно удалить и список юзеров, чтобы не засорять БД
                 if code in used_promo_db: del used_promo_db[code]
-                
                 save_json(PROMOS_FILE, active_promos)
                 save_json(ACTIVATED_PROMOS_FILE, used_promo_db)
                 await update.message.reply_text("❌ Промокод истек.")
@@ -320,7 +415,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Такого промокода не существует.")
         return
 
-    # ТОПЫ
     if first_line == "тп":
         top_list = sorted(daily_stats.items(), key=lambda x: x[1]['count'], reverse=True)[:10]
         res = "📊 **ТОП ОБЩИТЕЛЬНЫХ:**\n\n"
@@ -330,33 +424,73 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if first_line == "обо мне": return await show_profile(update, user)
 
+    # ОБНОВЛЕННЫЙ БАЛАНС
     if first_line in ["баланс", "б"]:
-        bal = "∞" if user.id == OWNER_ID else user_balance.get(user.id, 0)
-        return await update.message.reply_text(f"💰 Баланс {user.first_name}: {bal} KLC")
+        bal_main = "∞" if user.id == OWNER_ID else stats['main']
+        msg_text = f"💰 {user.first_name}:\n💳 Чистый: {bal_main} KLC\n🎁 Бонусный: {stats['bonus']} KLC"
+        return await update.message.reply_text(msg_text)
 
     if first_line == "бонус":
         now = datetime.now()
         if user.id in bonus_timers and now < bonus_timers[user.id] + timedelta(days=1):
             return await update.message.reply_text("❌ Бонус доступен раз в 24 часа!")
         amt = random.randint(150, 600)
-        if user.id != OWNER_ID: user_balance[user.id] = user_balance.get(user.id, 0) + amt
+        update_balance(user.id, amt, "bonus") # Бонус идет в бонусы
         bonus_timers[user.id] = now
-        save_json(ECONOMY_FILE, user_balance)
-        return await update.message.reply_text(f"🎁 Ежедневный бонус: +{amt} KLC!")
+        return await update.message.reply_text(f"🎁 Ежедневный бонус: +{amt} Бонусных KLC!")
+
+    # КАЗИНО И СЛОТЫ
+    if first_line.startswith("слоты") or first_line.startswith("казино"):
+        parts = first_line.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            return await update.message.reply_text("🎰 Пиши: `слоты [ставка]`")
+        bet = int(parts[1])
+        if bet < MIN_BET_SLOTS: return await update.message.reply_text(f"❌ Мин: {MIN_BET_SLOTS}")
+        res_text, success = await run_slots(user.id, bet)
+        await update.message.reply_text(res_text, reply_markup=get_slots_kb(bet) if success else None, parse_mode="Markdown")
+
+    # ВЫВОД СРЕДСТВ
+    if first_line.startswith("вывод"):
+        parts = full_text.split()
+        if len(parts) < 3: return await update.message.reply_text("⚠️ `вывод [сумма] [карта]`")
+        
+        amount = int(parts[1])
+        card_info = " ".join(parts[2:])
+        if amount > MAX_DAILY_WITHDRAW: return await update.message.reply_text(f"⚠️ Лимит вывода: {MAX_DAILY_WITHDRAW} KLC за раз!")
+        if (stats["main"] + stats["bonus"]) < amount: return await update.message.reply_text("❌ Недостаточно средств!")
+
+        f_bonus = min(amount, stats["bonus"])
+        f_main = amount - f_bonus
+        
+        m_comm = 0 if (user.id in donators or user.id == OWNER_ID) else 0.65
+        b_comm = 0.35 
+
+        rub_total = int(((f_main * CURRENCY_RATE) * (1 - m_comm)) + ((f_bonus * CURRENCY_RATE) * (1 - b_comm)))
+        
+        req_id = random.randint(1000, 9999)
+        withdraw_requests[req_id] = {"u_id": user.id, "amount": amount, "rub": rub_total, "m": f_main, "b": f_bonus}
+        
+        update_balance(user.id, -f_main, "main")
+        update_balance(user.id, -f_bonus, "bonus")
+
+        await update.message.reply_text(f"✅ Заявка №{req_id} создана!\nОжидайте выплату: ~{rub_total} руб.")
+        admin_text = f"💰 **ЗАЯВКА №{req_id}**\n👤 От: {user.id}\n💳 Карта: `{card_info}`\n💵 **ВЫПЛАТИТЬ: {rub_total} РУБ**"
+        await context.bot.send_message(OWNER_ID, admin_text, reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Оплачено", callback_data=f"adm_win_{req_id}"),
+            InlineKeyboardButton("❌ Отказ", callback_data=f"adm_rej_{req_id}")]]))
 
     if msg:
         t_id = msg.from_user.id
         c_rank, t_rank = get_rank(user.id), get_rank(t_id)
 
-        # ПЕРЕДАЧА ДЕНЕГ
+        # ПЕРЕДАЧА ДЕНЕГ (Только из Чистого баланса)
         if main_cmd == "передать":
             try:
                 amount = int(cmd_parts[1])
-                if user.id != OWNER_ID and user_balance.get(user.id, 0) < amount:
-                    return await update.message.reply_text("❌ Недостаточно KLC")
-                if user.id != OWNER_ID: user_balance[user.id] -= amount
-                user_balance[t_id] = user_balance.get(t_id, 0) + amount
-                save_json(ECONOMY_FILE, user_balance)
+                if user.id != OWNER_ID and stats["main"] < amount:
+                    return await update.message.reply_text("❌ Недостаточно ЧИСТЫХ KLC для перевода!")
+                update_balance(user.id, -amount, "main")
+                update_balance(t_id, amount, "main")
                 await update.message.reply_text(f"✅ Передано {amount} KLC пользователю {msg.from_user.first_name}")
             except: await update.message.reply_text("❌ Формат: передать 100")
             return
@@ -409,7 +543,7 @@ async def roulette_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=20)).build()
+    app = ApplicationBuilder().token(TOKEN).request(HTTPXRequest(connect_timeout=30, read_timeout=30)).build()
     
     promo_conv = ConversationHandler(
         entry_points=[CommandHandler("createpm", promo_start)],
@@ -430,5 +564,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(all_callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    print(f"Kryloxa System v{BOT_VERSION} ЗАПУЩЕН! ЗАЩИТА ОТ ДЮПА ПРОМО ВКЛЮЧЕНА.")
+    print(f"Kryloxa System v{BOT_VERSION} ЗАПУЩЕН! КАЗИНО 2.0 ИНТЕГРИРОВАНО.")
     app.run_polling(drop_pending_updates=True)
