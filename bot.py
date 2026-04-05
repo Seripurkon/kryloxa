@@ -153,6 +153,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = lines[1].strip() if len(lines) > 1 else "Не указана"
     cmd_parts = first_line.split()
     main_cmd = cmd_parts[0] if cmd_parts else ""
+    if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
+        hours_time = int(cmd_parts[1])
+    else:
+        hours_time = 1
 
     user, chat_id, msg = update.effective_user, update.effective_chat.id, update.message.reply_to_message
 
@@ -209,8 +213,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if main_cmd == "молчи":
                     await context.bot.restrict_chat_member(chat_id, t_id,
                                                            permissions=ChatPermissions(can_send_messages=False),
-                                                           until_date=datetime.now() + timedelta(hours=1))
-                    await update.message.reply_text(f"🤫 Тишина на час.\n📝 Причина: {reason}")
+                                                           until_date=datetime.now() + timedelta(minutes=hours_time))
+                    await update.message.reply_text(f"🤫 Тишина на {hours_time} час(а).\n📝 Причина: {reason}")
                 elif main_cmd == "скажи":
                     # Твой друг доделает, я оставил базовый unban
                     await context.bot.restrict_chat_member(chat_id, t_id,
