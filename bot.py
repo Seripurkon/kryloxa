@@ -15,23 +15,20 @@ TESTER_ID = 782585931
 HELPER_ID = 8475300408
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
-BOT_VERSION = "0.9.7" # Обновлено: Добавлен парсер времени
+BOT_VERSION = "0.9.8" # ТЕПЕРЬ ТОЧНО 0.9.8
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ПАРСЕР) ---
 def decline_word(number, titles):
-    """Склонение слов: 1 час, 2 часа, 5 часов"""
     cases = [2, 0, 1, 1, 1, 2]
     return titles[0 if number % 100 > 4 and number % 100 < 20 else cases[min(number % 10, 5)]]
 
 def parse_kryloxa_time(text):
-    """Парсит время из текста и возвращает (секунды, красивый_текст)"""
     text = text.lower().strip()
     if "навсегда" in text:
         return -1, "навсегда 💀"
     
-    # Ищем число и первую букву (м, ч, д, г)
     match = re.search(r"(\d+)\s*([мчдг])", text)
     if not match:
         return None, None
@@ -208,18 +205,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if main_cmd == "инфа": return await show_profile(update, msg.from_user)
 
-        # МОДЕРАЦИЯ С НОВЫМ ПАРСЕРОМ
+        # МОДЕРАЦИЯ
         if c_rank >= 1 and (t_rank < c_rank or user.id == OWNER_ID):
-            # Пытаемся вытащить время из текста
             seconds, time_text = parse_kryloxa_time(full_text)
-            
-            # Если время не нашли, ставим 1 час по дефолту
-            if not seconds:
-                seconds, time_text = 3600, "1 час"
+            if not seconds: seconds, time_text = 3600, "1 час"
 
             try:
                 if main_cmd == "молчи":
-                    # Если -1 (навсегда), мутим на 100 лет
                     until = datetime.now() + (timedelta(seconds=seconds) if seconds != -1 else timedelta(days=36500))
                     await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
                     await update.message.reply_text(f"🤫 Тишина на {time_text}.\n📝 Причина: {reason}")
@@ -231,7 +223,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 elif main_cmd == "варн":
                     warns[t_id] = warns.get(t_id, 0) + 1
-                    await update.message.reply_text(f"⚠️ Варн выдан ({warns[t_id]}/3)\n📝 Причина: {reason}")
+                    if warns[t_id] >= 3:
+                        warns[t_id] = 0
+                        until = datetime.now() + timedelta(days=1)
+                        await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
+                        await update.message.reply_text(f"🤐 Пользователь {msg.from_user.first_name} набрал 3/3 варна и получает МУТ на 1 день!")
+                    else:
+                        await update.message.reply_text(f"⚠️ Варн выдан ({warns[t_id]}/3)\n📝 Причина: {reason}")
                 
                 elif main_cmd == "скажи":
                     await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=True))
