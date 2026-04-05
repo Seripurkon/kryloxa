@@ -15,7 +15,7 @@ TESTER_ID = 782585931
 HELPER_ID = 8475300408
 ECONOMY_FILE = "economy.json"
 RANKS_FILE = "ranks.json"
-BOT_VERSION = "0.9.8" # ТЕПЕРЬ ТОЧНО 0.9.8
+BOT_VERSION = "0.9.7" # Обновлено: Полный доступ в команде 'скажи'
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -129,13 +129,32 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     u_id = q.from_user.id
     bal = user_balance.get(u_id, 0)
+    
+    # ПРАВА ДЛЯ ПОЛНОГО РАЗМУТА (ИСПОЛЬЗУЮТСЯ В МАГАЗИНЕ И КОМАНДЕ "СКАЖИ")
+    full_perms = ChatPermissions(
+        can_send_messages=True,
+        can_send_audios=True,
+        can_send_documents=True,
+        can_send_photos=True,
+        can_send_videos=True,
+        can_send_video_notes=True,
+        can_send_voice_notes=True,
+        can_send_polls=True,
+        can_send_other_messages=True,
+        can_add_web_page_previews=True,
+        can_change_info=True,
+        can_invite_users=True,
+        can_pin_messages=True,
+        can_manage_topics=True
+    )
+
     if q.data == "buy_unmute":
         if u_id == OWNER_ID or bal >= 1000:
             if u_id != OWNER_ID: user_balance[u_id] -= 1000
             save_json(ECONOMY_FILE, user_balance)
             try:
-                await context.bot.restrict_chat_member(q.message.chat_id, u_id, permissions=ChatPermissions(can_send_messages=True))
-                await q.answer("✅ Ограничения сняты!", show_alert=True)
+                await context.bot.restrict_chat_member(q.message.chat_id, u_id, permissions=full_perms)
+                await q.answer("✅ Ограничения сняты (полный доступ)!", show_alert=True)
             except: await q.answer("❌ Ошибка прав.")
         else: await q.answer("❌ Недостаточно KLC!", show_alert=True)
     elif q.data == "buy_unwarn":
@@ -232,11 +251,29 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await update.message.reply_text(f"⚠️ Варн выдан ({warns[t_id]}/3)\n📝 Причина: {reason}")
                 
                 elif main_cmd == "скажи":
-                    await context.bot.restrict_chat_member(chat_id, t_id, permissions=ChatPermissions(can_send_messages=True))
-                    await update.message.reply_text("🔊 Пользователь снова может писать")
+                    # ОБНОВЛЕННЫЕ ПРАВА: РАЗРЕШАЕМ ВСЁ (СТИКЕРЫ, ГИФ, ВИДЕО, ОПРОСЫ И Т.Д.)
+                    full_access = ChatPermissions(
+                        can_send_messages=True,
+                        can_send_audios=True,
+                        can_send_documents=True,
+                        can_send_photos=True,
+                        can_send_videos=True,
+                        can_send_video_notes=True,
+                        can_send_voice_notes=True,
+                        can_send_polls=True,
+                        can_send_other_messages=True, # Это стикеры и гифки
+                        can_add_web_page_previews=True,
+                        can_change_info=True,
+                        can_invite_users=True,
+                        can_pin_messages=True,
+                        can_manage_topics=True
+                    )
+                    await context.bot.restrict_chat_member(chat_id, t_id, permissions=full_access)
+                    await update.message.reply_text(f"🔊 Пользователь {msg.from_user.first_name} полностью разблокирован!")
             except: pass
 
 # --- РУЛЕТКА ---
+# (Логика рулетки без изменений)
 async def roulette_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.reply_to_message
     if not msg or update.effective_user.id == msg.from_user.id: return
