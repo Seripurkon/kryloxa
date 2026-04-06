@@ -20,7 +20,8 @@ from telegram import (
     InlineKeyboardButton, 
     InlineKeyboardMarkup, 
     ChatPermissions,
-    constants
+    constants,
+    LinkPreviewOptions
 )
 from telegram.ext import (
     ApplicationBuilder, 
@@ -89,6 +90,7 @@ def save_json(path, data):
 u_db = load_json(PATHS["users"])
 p_db = load_json(PATHS["punish"])
 a_db = load_json(PATHS["activity"])
+duel_data = {} # Добавлено: хранилище для активных рулеток
 
 def get_user_struct(uid, name="Игрок"):
     if uid not in u_db:
@@ -155,6 +157,19 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "└ `/donate` — магазин привилегий"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
+
+# Добавлена недостающая функция admin_createpm
+async def admin_createpm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID: return
+    try:
+        amt = int(context.args[0])
+        target = update.message.reply_to_message.from_user if update.message.reply_to_message else update.effective_user
+        t_u = get_user_struct(target.id, target.first_name)
+        t_u["bonus"] += amt
+        sync_all()
+        await update.message.reply_text(f"💎 Начислено {amt} бонусов игроку {target.first_name}!")
+    except:
+        await update.message.reply_text("Используй: `/createpm 100` (ответом на сообщение)")
 
 # ==============================================================================
 # [5] ИГРОВОЙ МОДУЛЬ (GAMES ENGINE)
@@ -394,8 +409,11 @@ async def cmd_magaz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛒 **ВНУТРИИГРОВЫЕ УСЛУГИ**", reply_markup=InlineKeyboardMarkup(kb))
 
 if __name__ == "__main__":
-    # Настройки по умолчанию
-    defaults = Defaults(parse_mode=constants.ParseMode.MARKDOWN, disable_web_page_preview=True)
+    # Исправлена ошибка Defaults (LinkPreviewOptions вместо disable_web_page_preview)
+    defaults = Defaults(
+        parse_mode=constants.ParseMode.MARKDOWN, 
+        link_preview_options=LinkPreviewOptions(is_disabled=True)
+    )
     
     app = ApplicationBuilder().token(TOKEN).defaults(defaults).build()
 
