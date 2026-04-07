@@ -4,7 +4,9 @@ import random
 import logging
 import re
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
+load_dotenv()  # <-- И ЭТУ СТРОКУ ТОЖЕ
 from telegram import (
     Update, 
     InlineKeyboardButton, 
