@@ -25,19 +25,16 @@ from telegram.ext import (
 # ==========================================
 # [1] КОНФИГУРАЦИЯ (Из твоего файла)
 # ==========================================
-TOKEN = "8641381095:AAH44UdW5z66BkX0rO5qKHOcdESAoghso_g"
+TOKEN = os.getenv("TOKEN")
 OWNER_ID = 5679520675
 MY_CARD = "2202208415332171"
 
-DB_DIR = "database"
-if not os.path.exists(DB_DIR): os.makedirs(DB_DIR)
-
 FILES = {
-    "economy": f"{DB_DIR}/economy.json", 
-    "donators": f"{DB_DIR}/donators.json", 
-    "ranks": f"{DB_DIR}/ranks.json",
-    "promos": f"{DB_DIR}/promos.json",
-    "warns": f"{DB_DIR}/warns.json"
+    "economy": "economy.json",
+    "donators": "donators.json",
+    "ranks": "ranks.json",
+    "promos": "promos.json",
+    "warns": "warns.json"
 }
 
 logging.basicConfig(
