@@ -369,5 +369,3 @@ if __name__ == "__main__":
     # Запуск с очисткой старых вебхуков (важно для устранения Conflict)
     print("Бот запускается...")
     app.run_polling(drop_pending_updates=True)
-    
-    app.run_polling()
