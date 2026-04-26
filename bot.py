@@ -24,7 +24,7 @@ from telegram.ext import (
 # ==========================================
 # КОНФИГУРАЦИЯ
 # ==========================================
-TOKEN = "8641381095:AAGC27s_lq4eCI6oEtaNI5hdIMruRDtd2Ag"
+TOKEN = "8641381095:AAFsTmlIe5JMv75XVlPrEShWdSFX18Paaf8"
 OWNER_ID = 5679520675
 VERSION = "1.0"
 
