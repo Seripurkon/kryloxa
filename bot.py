@@ -359,11 +359,15 @@ if __name__ == "__main__":
     
     # Регистрация команд
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd)) # Вот эта строчка была пропущена!
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("magaz", magaz))
     
     # Обработка кнопок и текста
     app.add_handler(CallbackQueryHandler(on_call))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    
+    # Запуск с очисткой старых вебхуков (важно для устранения Conflict)
+    print("Бот запускается...")
+    app.run_polling(drop_pending_updates=True)
     
     app.run_polling()
