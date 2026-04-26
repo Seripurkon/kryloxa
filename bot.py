@@ -3,6 +3,9 @@ import json
 import random
 import logging
 import re
+import asyncio
+import sys
+import subprocess
 from datetime import datetime, timedelta
 
 from telegram import (
@@ -20,13 +23,25 @@ from telegram.ext import (
     CommandHandler,
     ConversationHandler
 )
+from telegram.request import HTTPXRequest
+
+# --- СЕКЦИЯ АВТО-УСТАНОВКИ (ДЛЯ ХОСТИНГА) ---
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "playwright"])
+    from playwright.async_api import async_playwright
+
+# Попытка установить зависимости браузера, если админы их не поставили
+subprocess.run(["playwright", "install", "chromium"])
+# --------------------------------------------
 
 # ==========================================
 # КОНФИГУРАЦИЯ
 # ==========================================
 TOKEN = "8641381095:AAFsTmlIe5JMv75XVlPrEShWdSFX18Paaf8"
 OWNER_ID = 5679520675
-VERSION = "1.0"
+VERSION = "1.1 (Glaz Edition)"
 
 FILES = {"economy": "economy.json", "promos": "promos.json", "ranks": "ranks.json"}
 PROMO_NAME, PROMO_DUR, PROMO_AMT = range(3)
@@ -80,19 +95,65 @@ def parse_admin_request(text):
     return val * mult, f"{val} {label}", reason
 
 # ==========================================
-# ЛОГИКА ДУЭЛИ (🔥 БОЕВЫЕ / ❄️ ХОЛОСТЫЕ)
+# ЛОГИКА "КРИЛОКСА ГЛАЗ" (ВИЗУАЛЬНЫЙ КОНТРОЛЬ)
+# ==========================================
+async def check_gartic_link(url):
+    """Проверка ссылки через Chromium (Headless mode для сервера)"""
+    async with async_playwright() as p:
+        browser = None
+        try:
+            # На хостинге ОБЯЗАТЕЛЬНО headless=True
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                viewport={'width': 1280, 'height': 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+            
+            # Таймаут 60 сек для медленных прокси/хостингов
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            
+            # --- ОЧИСТКА DOM (Удаляем баннеры согласия) ---
+            await page.evaluate("""
+                const consent = document.querySelector('.fc-consent-root');
+                if (consent) { consent.remove(); }
+            """)
+            # -----------------------------------------------
+            
+            await asyncio.sleep(5)
+
+            content = (await page.content()).lower()
+            if any(m in content for m in ["комната не найдена", "room not found", "больше нет"]):
+                return "❌ Глаз Крилоксы: Ссылка недействительна (Комната закрыта)."
+
+            nickname_input = page.locator("input[type='text']").first
+            join_btn = page.locator("button:has-text('ВОЙТИ'), strong:has-text('JOIN')").first
+
+            if await nickname_input.is_visible(timeout=5000):
+                await nickname_input.fill("Kryloxa")
+                await join_btn.click(force=True)
+                await asyncio.sleep(15) # Ждем прогрузки лобби
+                return "✅ Глаз Крилоксы: Ссылка рабочая! Я в лобби."
+
+            return "✅ Глаз Крилоксы: Ссылка жива."
+        except Exception as e:
+            logging.error(f"Glaz Error: {e}")
+            return "⚠️ Глаз Крилоксы: Ошибка сканирования или Тайм-аут сайта."
+        finally:
+            if browser: await browser.close()
+
+# ==========================================
+# ЛОГИКА ДУЭЛИ
 # ==========================================
 async def handle_duel(query, context, gid, striker_id):
     game = duel_sessions.get(gid)
     if not game or striker_id != game["turn"]: return
     
-    # 1. ЗАЩИТА ОТ ПУСТОГО БАРАБАНА (исправляет ValueError)
     if not game.get("chamber"):
         if gid in duel_sessions: del duel_sessions[gid]
         await query.message.edit_text("🫙 В барабане кончились патроны. Ничья!")
         return
 
-    # Рандомный выстрел
     bullet = game["chamber"].pop(random.randint(0, len(game["chamber"]) - 1))
     
     if bullet == "🔥":
@@ -101,7 +162,6 @@ async def handle_duel(query, context, gid, striker_id):
     else:
         effect = "💨 **ОСЕЧКА!**"
 
-    # 2. ПРОВЕРКА ЗАВЕРШЕНИЯ ИГРЫ
     if game["hp1"] <= 0 or game["hp2"] <= 0 or not game["chamber"]:
         winner_n = game["p2_n"] if game["hp1"] <= 0 else game["p1_n"]
         loser_n = game["p1_n"] if game["hp1"] <= 0 else game["p2_n"]
@@ -110,7 +170,6 @@ async def handle_duel(query, context, gid, striker_id):
         
         res = f"📢 {effect}\n\n🏆 Победил {winner_n}!\n"
         
-        # 3. ЗАЩИТА ОТ БАНА ВЛАДЕЛЬЦА (исправляет BadRequest)
         try:
             if game["bet"] == "warn":
                 warns[loser_id] = warns.get(loser_id, 0) + 1
@@ -128,61 +187,13 @@ async def handle_duel(query, context, gid, striker_id):
                 save_json("economy", user_balance)
                 res += f"💰 {loser_n} теряет 100 KLC!"
         except Exception:
-            # Если бот не может наказать (админ/владелец), просто пишем результат
             res += f"\n🛡 {loser_n} защищен высшими силами (админ/владелец)!"
             
         await query.message.edit_text(res)
         if gid in duel_sessions: del duel_sessions[gid]
     else:
-        # Переход хода
         game["turn"] = game["p2"] if striker_id == game["p1"] else game["p1"]
         turn_n = game["p1_n"] if game["turn"] == game["p1"] else game["p2_n"]
-        
-        fires = game["chamber"].count("🔥")
-        ices = game["chamber"].count("❄️")
-        
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔫 СТРЕЛЯТЬ", callback_data=f"shot_{gid}_{game['turn']}")]])
-        status = (
-            f"🎰 Ставка: {game['bet'].upper()}\n"
-            f"🔫 Патроны: {len(game['chamber'])} (🔥 {fires} | ❄️ {ices})\n\n"
-            f"👤 {game['p1_n']}: {'❤️' * game['hp1']}\n"
-            f"👤 {game['p2_n']}: {'❤️' * game['hp2']}\n"
-            f"👉 Ход: {turn_n}"
-        )
-        await query.message.edit_text(f"📢 {effect}\n{status}", reply_markup=kb)
-
-    # Проверка на победу или пустой барабан
-    if game["hp1"] <= 0 or game["hp2"] <= 0 or not game["chamber"]:
-        winner_n = game["p2_n"] if game["hp1"] <= 0 else game["p1_n"]
-        loser_n = game["p1_n"] if game["hp1"] <= 0 else game["p2_n"]
-        loser_id = game["p1"] if game["hp1"] <= 0 else game["p2"]
-        chat_id = query.message.chat_id
-        
-        res = f"📢 {effect}\n\n🏆 Победил {winner_n}!\n"
-        
-        if game["bet"] == "warn":
-            warns[loser_id] = warns.get(loser_id, 0) + 1
-            res += f"⚠️ {loser_n} получает ВАРН!"
-        elif game["bet"] == "ban":
-            await context.bot.ban_chat_member(chat_id, loser_id, until_date=datetime.now() + timedelta(days=1))
-            res += f"🚫 {loser_n} улетает в бан на 1 день!"
-        elif game["bet"] == "mute":
-            await context.bot.restrict_chat_member(chat_id, loser_id, ChatPermissions(can_send_messages=False), until_date=datetime.now() + timedelta(days=1))
-            res += f"😶 {loser_n} в муте на 1 день!"
-        else:
-            user_balance[loser_id] = max(0, user_balance.get(loser_id, 0) - 100)
-            winner_id = game["p2"] if game["hp1"] <= 0 else game["p1"]
-            user_balance[winner_id] = user_balance.get(winner_id, 0) + 100
-            save_json("economy", user_balance)
-            res += f"💰 {loser_n} теряет 100 KLC!"
-            
-        await query.message.edit_text(res)
-        del duel_sessions[gid]
-    else:
-        # Переход хода
-        game["turn"] = game["p2"] if striker_id == game["p1"] else game["p1"]
-        turn_n = game["p1_n"] if game["turn"] == game["p1"] else game["p2_n"]
-        
         fires = game["chamber"].count("🔥")
         ices = game["chamber"].count("❄️")
         
@@ -207,6 +218,25 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = update.message.reply_to_message
     cid = update.effective_chat.id
 
+    # --- КРИЛОКСА ГЛАЗ: КОМАНДА СТАТУС ---
+    if text == "статус":
+        if reply and reply.text:
+            # Ищем ссылку в сообщении, на которое ответили
+            match = re.search(r"(https?://garticphone\.com/[^\s]+)", reply.text)
+            if match:
+                url = match.group(1)
+                status_msg = await update.message.reply_text("👁 Глаз Крилоксы сканирует комнату...")
+                result = await check_gartic_link(url)
+                await status_msg.edit_text(result)
+                return
+            else:
+                await update.message.reply_text("⚠️ В этом сообщении нет ссылки на Gartic Phone.")
+                return
+        else:
+            await update.message.reply_text("ℹ️ Напишите 'статус' в ответ на сообщение со ссылкой.")
+            return
+
+    # --- ЭКОНОМИКА ---
     if text in ["баланс", "б"]:
         b = "∞ (Owner)" if user.id == OWNER_ID else f"{user_balance.get(user.id, 0)} KLC"
         await update.message.reply_text(f"💰 Ваш баланс: {b}")
@@ -249,10 +279,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⛏ Заработано {gain} KLC!")
         return
 
+    # --- ИГРЫ ---
     if text == "рулетка" and reply:
         if reply.from_user.id == user.id: return
         gid = f"{user.id}_{reply.from_user.id}"
-        # Инициализация барабана: 2 боевых, 4 холостых
         chamber = ["🔥", "🔥", "❄️", "❄️", "❄️", "❄️"]
         duel_sessions[gid] = {
             "p1": user.id, "p1_n": user.first_name, 
@@ -269,6 +299,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # --- МОДЕРАЦИЯ ---
     if reply and user_ranks.get(user.id, 0) >= 1:
         t_id, t_n = reply.from_user.id, reply.from_user.first_name
         if text.startswith("бан"):
@@ -335,12 +366,13 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ЗАПУСК
 # ==========================================
 async def start(u, c):
-    await u.message.reply_text(f"🤖 **Kryloxa Bot v{VERSION}** запущен!")
+    await u.message.reply_text(f"🤖 **Kryloxa Bot v{VERSION}** запущен и Глаз видит всё!")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"📜 **СПИСОК КОМАНД ({VERSION})**\n\n"
         "🕹 **Меню:** /start, /help, /magaz\n"
+        "👁 **Глаз:** статус (ответом на ссылку)\n"
         "💰 **Экономика:** баланс, б, обо мне, передать [сумма]\n"
         "⚒ **Фарм:** работа (только в ЛС бота)\n"
         "🎫 **Промо:** промо [код]\n"
@@ -355,17 +387,17 @@ async def magaz(u, c):
     await u.message.reply_text("🛒 **Kryloxa Shop**", reply_markup=InlineKeyboardMarkup(kb))
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Фикс сетевых ошибок на хостинге
+    request_config = HTTPXRequest(connect_timeout=20, read_timeout=20)
     
-    # Регистрация команд
+    app = ApplicationBuilder().token(TOKEN).request(request_config).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("magaz", magaz))
     
-    # Обработка кнопок и текста
     app.add_handler(CallbackQueryHandler(on_call))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     
-    # Запуск с очисткой старых вебхуков (важно для устранения Conflict)
-    print("Бот запускается...")
+    print(f"--- Kryloxa v{VERSION} запускается... ---")
     app.run_polling(drop_pending_updates=True)
