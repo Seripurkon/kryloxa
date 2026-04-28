@@ -38,9 +38,9 @@ try:
 except Exception:
     pass
 
-TOKEN = "8641381095:AAE1uHoBHObu34tQsTe3hQ1zL4wEPSZgvzU"
+TOKEN = "8641381095:AAEGHdOoa_Byyjoqz_M0m11TNu3xZ_ntxnc"
 OWNER_ID = 5679520675
-VERSION = "2.2 (PostgreSQL + Глаз + Дуэли)"
+VERSION = "2.3 (PostgreSQL + Глаз + Дуэли + Топ дня)"
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -48,13 +48,15 @@ logging.basicConfig(
     stream=sys.stdout
 )
 
-# Временные данные для дуэлей и таймеров (оставляем в памяти)
+# Временные данные
 duel_sessions = {}
 work_timers = {}
+pending_promos = {}
+message_counters = {}  # {user_id: {"count": 0, "date": "2024-01-01"}}
+last_top_reset = None
 
 
 async def get_rank_str(uid):
-    """Получение ранга из БД"""
     if uid == OWNER_ID:
         return "4 (Owner)"
     rank = await db.get_rank(uid)
@@ -79,6 +81,28 @@ def parse_admin_request(text):
     return val * mult, f"{val} {label}", reason
 
 
+async def reset_daily_counters():
+    global last_top_reset
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if last_top_reset != today:
+        # Сохраняем топ для награждения
+        if message_counters:
+            top_users = sorted(message_counters.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
+            
+            # Награждаем топ 3
+            rewards = {1: 1000, 2: 500, 3: 200}
+            for i, (user_id, data) in enumerate(top_users[:3], 1):
+                if user_id != OWNER_ID:
+                    await db.update_balance(user_id, rewards[i])
+            
+            # Очищаем счётчики
+            message_counters.clear()
+        
+        last_top_reset = today
+
+
+# ====================== ГЛАЗ (GARTIC PHONE) ======================
 DEAD_MARKERS = [
     "room not found",
     "комната не найдена",
@@ -559,7 +583,8 @@ async def check_gartic_link(url, count_mode=False):
                 await browser.close()
 
 
-async def handle_duel(query, context, gid, striker_id):
+# ====================== ДУЭЛЬ (РУЛЕТКА) ======================
+async def handle_duel_shot(query, context, gid, striker_id, target_self=False):
     game = duel_sessions.get(gid)
 
     if not game or striker_id != game["turn"]:
@@ -573,11 +598,21 @@ async def handle_duel(query, context, gid, striker_id):
 
     bullet = game["chamber"].pop(random.randint(0, len(game["chamber"]) - 1))
 
-    if bullet == "🔥":
-        game[f"hp{1 if striker_id == game['p1'] else 2}"] -= 1
-        effect = "💥 БАБАХ!"
+    # Определяем кто получает урон
+    if target_self:
+        # Стрельба в себя
+        if bullet == "🔥":
+            game[f"hp{1 if striker_id == game['p1'] else 2}"] -= 1
+            effect = "💥 БАБАХ! Вы стрельнули в себя!"
+        else:
+            effect = "💨 ОСЕЧКА! Везёт, холостой!"
     else:
-        effect = "💨 ОСЕЧКА!"
+        # Обычная стрельба в противника
+        if bullet == "🔥":
+            game[f"hp{1 if striker_id == game['p2'] else 1}"] -= 1
+            effect = "💥 БАБАХ!"
+        else:
+            effect = "💨 ОСЕЧКА!"
 
     if game["hp1"] <= 0 or game["hp2"] <= 0 or not game["chamber"]:
         winner_n = game["p2_n"] if game["hp1"] <= 0 else game["p1_n"]
@@ -637,9 +672,19 @@ async def handle_duel(query, context, gid, striker_id):
     fires = game["chamber"].count("🔥")
     ices = game["chamber"].count("❄️")
 
-    kb = InlineKeyboardMarkup([
+    # Кнопки дуэли
+    buttons = [
         [InlineKeyboardButton("🔫 СТРЕЛЯТЬ", callback_data=f"shot_{gid}_{game['turn']}")]
-    ])
+    ]
+    
+    # Кнопка выстрела в себя
+    buttons[0].append(InlineKeyboardButton("🔫 В СЕБЯ", callback_data=f"self_{gid}_{game['turn']}"))
+    
+    # Кнопка пощадить (если у противника 1 сердце)
+    if (game["turn"] == game["p1"] and game["hp2"] == 1) or (game["turn"] == game["p2"] and game["hp1"] == 1):
+        buttons.append([InlineKeyboardButton("🕊 ПОЩАДИТЬ", callback_data=f"spare_{gid}_{game['turn']}")])
+
+    kb = InlineKeyboardMarkup(buttons)
 
     status = (
         f"🎰 Ставка: {game['bet'].upper()}\n"
@@ -652,6 +697,187 @@ async def handle_duel(query, context, gid, striker_id):
     await query.message.edit_text(f"📢 {effect}\n\n{status}", reply_markup=kb)
 
 
+async def handle_duel_spare(query, context, gid, striker_id):
+    game = duel_sessions.get(gid)
+
+    if not game or striker_id != game["turn"]:
+        return
+
+    # Пощадить - пропускаем ход
+    game["turn"] = game["p2"] if striker_id == game["p1"] else game["p1"]
+    turn_n = game["p1_n"] if game["turn"] == game["p1"] else game["p2_n"]
+
+    fires = game["chamber"].count("🔥")
+    ices = game["chamber"].count("❄️")
+
+    buttons = [
+        [InlineKeyboardButton("🔫 СТРЕЛЯТЬ", callback_data=f"shot_{gid}_{game['turn']}")]
+    ]
+    
+    buttons[0].append(InlineKeyboardButton("🔫 В СЕБЯ", callback_data=f"self_{gid}_{game['turn']}"))
+    
+    if (game["turn"] == game["p1"] and game["hp2"] == 1) or (game["turn"] == game["p2"] and game["hp1"] == 1):
+        buttons.append([InlineKeyboardButton("🕊 ПОЩАДИТЬ", callback_data=f"spare_{gid}_{game['turn']}")])
+
+    kb = InlineKeyboardMarkup(buttons)
+
+    status = (
+        f"🎰 Ставка: {game['bet'].upper()}\n"
+        f"🔫 Патроны: {len(game['chamber'])} (🔥 {fires} | ❄️ {ices})\n\n"
+        f"👤 {game['p1_n']}: {'❤️' * game['hp1']}\n"
+        f"👤 {game['p2_n']}: {'❤️' * game['hp2']}\n"
+        f"👉 Ход: {turn_n}"
+    )
+
+    await query.message.edit_text(f"📢 🕊 Пощадил! Ход переходит {turn_n}\n\n{status}", reply_markup=kb)
+
+
+# ====================== СОЗДАНИЕ ПРОМОКОДОВ ======================
+async def create_promo_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("⛔ Эта команда доступна только владельцу.")
+        return
+    
+    pending_promos[user_id] = {"step": "name"}
+    await update.message.reply_text(
+        "🎫 **СОЗДАНИЕ ПРОМОКОДА**\n\n"
+        "1️⃣ Введите название промокода\n"
+        "(можно использовать буквы, цифры и знак подчёркивания)\n\n"
+        "❌ Отмена - отправьте `отмена`",
+        parse_mode="Markdown"
+    )
+
+
+async def process_promo_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if user_id not in pending_promos:
+        return
+    
+    if text.lower() == "отмена":
+        del pending_promos[user_id]
+        await update.message.reply_text("❌ Создание промокода отменено.")
+        return
+    
+    state = pending_promos[user_id]
+    step = state["step"]
+    
+    if step == "name":
+        if not re.match(r"^[a-zA-Zа-яА-Я0-9_]+$", text):
+            await update.message.reply_text("❌ Некорректное название. Используйте буквы, цифры и знак подчёркивания.\nПопробуйте ещё раз:")
+            return
+        
+        state["name"] = text.upper()
+        state["step"] = "days"
+        await update.message.reply_text(
+            f"✅ Название: `{text.upper()}`\n\n"
+            f"2️⃣ На сколько дней сделать промокод?\n"
+            f"(максимум 360 дней)\n\n"
+            f"Пример: `30` или `7`",
+            parse_mode="Markdown"
+        )
+    
+    elif step == "days":
+        try:
+            days = int(text)
+            if days < 1 or days > 360:
+                await update.message.reply_text("❌ Количество дней должно быть от 1 до 360.\nПопробуйте ещё раз:")
+                return
+            state["days"] = days
+            state["step"] = "amount"
+            await update.message.reply_text(
+                f"✅ Срок: {days} дней\n\n"
+                f"3️⃣ Сколько KLC будет выдавать промокод?\n"
+                f"(от 1 до 100000)\n\n"
+                f"Пример: `500` или `1000`",
+                parse_mode="Markdown"
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Введите число.\nПопробуйте ещё раз:")
+    
+    elif step == "amount":
+        try:
+            amount = int(text)
+            if amount < 1 or amount > 100000:
+                await update.message.reply_text("❌ Сумма должна быть от 1 до 100000 KLC.\nПопробуйте ещё раз:")
+                return
+            
+            name = state["name"]
+            days = state["days"]
+            
+            success = await db.create_promo(name, amount, days)
+            
+            if success:
+                await update.message.reply_text(
+                    f"✅ **ПРОМОКОД СОЗДАН!**\n\n"
+                    f"🎫 Код: `{name}`\n"
+                    f"💰 Сумма: {amount} KLC\n"
+                    f"📅 Срок: {days} дней\n\n"
+                    f"Команда для активации: `промо {name}`",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text("❌ Промокод с таким названием уже существует.")
+            
+            del pending_promos[user_id]
+        except ValueError:
+            await update.message.reply_text("❌ Введите число.\nПопробуйте ещё раз:")
+
+
+# ====================== АДМИН-ПАНЕЛЬ ======================
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+    
+    kb = [
+        [InlineKeyboardButton("👥 Пользователи (20)", callback_data="admin_users")],
+        [InlineKeyboardButton("💰 Топ баланса", callback_data="admin_top")],
+        [InlineKeyboardButton("🎫 Промокоды", callback_data="admin_promos")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("➕ Создать промокод", callback_data="admin_create_promo")],
+    ]
+    
+    await update.message.reply_text(
+        "🔧 **АДМИН-ПАНЕЛЬ**\n\nВыберите действие:",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
+
+
+# ====================== ТОП ДНЯ (тп) ======================
+async def top_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reset_daily_counters()
+    
+    if not message_counters:
+        await update.message.reply_text("📊 Сегодня пока нет сообщений в чате.")
+        return
+    
+    top_users = sorted(message_counters.items(), key=lambda x: x[1]["count"], reverse=True)[:10]
+    
+    message = "📊 **ТОП ДНЯ ПО СООБЩЕНИЯМ**\n\n"
+    
+    rewards = {1: "1000 KLC", 2: "500 KLC", 3: "200 KLC"}
+    
+    for i, (user_id, data) in enumerate(top_users, 1):
+        try:
+            user = await context.bot.get_chat(user_id)
+            name = user.first_name
+        except:
+            name = f"ID:{user_id}"
+        
+        reward_text = f" 🏆 +{rewards[i]}" if i <= 3 else ""
+        message += f"{i}. {name} — {data['count']} сообщений{reward_text}\n"
+    
+    await update.message.reply_text(message, parse_mode="Markdown")
+
+
+# ====================== ОСНОВНЫЕ ОБРАБОТЧИКИ ======================
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -661,6 +887,28 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     reply = update.message.reply_to_message
     cid = update.effective_chat.id
+
+    # Счётчик сообщений для топа дня (только в группах)
+    if update.effective_chat.type != "private":
+        today = datetime.now().strftime("%Y-%m-%d")
+        if user.id not in message_counters or message_counters[user.id]["date"] != today:
+            message_counters[user.id] = {"count": 0, "date": today}
+        message_counters[user.id]["count"] += 1
+
+    # Команда тп
+    if text == "тп":
+        await top_day(update, context)
+        return
+
+    # Команда админ-панель
+    if text == "админпанель" and user.id == OWNER_ID:
+        await admin_panel(update, context)
+        return
+
+    # Проверяем, не находится ли пользователь в процессе создания промокода
+    if user.id in pending_promos:
+        await process_promo_creation(update, context)
+        return
 
     # Регистрируем пользователя в БД
     await db.ensure_user(user.id)
@@ -873,6 +1121,7 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    # ДУЭЛЬ - выбор ставки
     if data.startswith("set_"):
         parts = data.split("_")
         bet = parts[1]
@@ -891,9 +1140,12 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game["bet"] = bet
         game["turn"] = game["p1"]
 
-        kb = InlineKeyboardMarkup([
+        buttons = [
             [InlineKeyboardButton("🔫 СТРЕЛЯТЬ", callback_data=f"shot_{gid}_{game['turn']}")]
-        ])
+        ]
+        buttons[0].append(InlineKeyboardButton("🔫 В СЕБЯ", callback_data=f"self_{gid}_{game['turn']}"))
+
+        kb = InlineKeyboardMarkup(buttons)
 
         status = (
             f"🎰 Ставка: {bet.upper()}\n"
@@ -906,6 +1158,7 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text(status, reply_markup=kb)
         return
 
+    # ДУЭЛЬ - выстрел
     if data.startswith("shot_"):
         parts = data.split("_")
         gid = f"{parts[1]}_{parts[2]}"
@@ -915,9 +1168,36 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("Сейчас не твой ход.", show_alert=True)
             return
 
-        await handle_duel(q, context, gid, striker)
+        await handle_duel_shot(q, context, gid, striker, target_self=False)
         return
 
+    # ДУЭЛЬ - выстрел в себя
+    if data.startswith("self_"):
+        parts = data.split("_")
+        gid = f"{parts[1]}_{parts[2]}"
+        striker = int(parts[3])
+
+        if q.from_user.id != striker:
+            await q.answer("Сейчас не твой ход.", show_alert=True)
+            return
+
+        await handle_duel_shot(q, context, gid, striker, target_self=True)
+        return
+
+    # ДУЭЛЬ - пощадить
+    if data.startswith("spare_"):
+        parts = data.split("_")
+        gid = f"{parts[1]}_{parts[2]}"
+        striker = int(parts[3])
+
+        if q.from_user.id != striker:
+            await q.answer("Сейчас не твой ход.", show_alert=True)
+            return
+
+        await handle_duel_spare(q, context, gid, striker)
+        return
+
+    # МАГАЗИН
     if data.startswith("shop_"):
         uid = q.from_user.id
         await db.ensure_user(uid)
@@ -953,24 +1233,113 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             return
 
+    # АДМИН-ПАНЕЛЬ
+    if data == "admin_users":
+        async with db.pool.acquire() as conn:
+            users = await conn.fetch("SELECT user_id, balance, rank, warns FROM users ORDER BY user_id LIMIT 20")
+        
+        text = "👥 **ПОСЛЕДНИЕ 20 ПОЛЬЗОВАТЕЛЕЙ:**\n\n"
+        for u in users:
+            text += f"🆔 `{u['user_id']}` | 💰 {u['balance']} | ⭐️ {u['rank']} | ⚠️ {u['warns']}\n"
+        
+        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return
+
+    if data == "admin_top":
+        async with db.pool.acquire() as conn:
+            users = await conn.fetch("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
+        
+        text = "💰 **ТОП 10 ПО БАЛАНСУ:**\n\n"
+        for i, u in enumerate(users, 1):
+            text += f"{i}. `{u['user_id']}` — {u['balance']} KLC\n"
+        
+        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return
+
+    if data == "admin_promos":
+        async with db.pool.acquire() as conn:
+            promos = await conn.fetch("SELECT code, amount, used_count, max_uses, expires_at FROM promos")
+        
+        if not promos:
+            text = "🎫 Промокодов пока нет."
+        else:
+            text = "🎫 **СПИСОК ПРОМОКОДОВ:**\n\n"
+            for p in promos:
+                expires = p['expires_at'].strftime("%d.%m.%Y") if p['expires_at'] else "бессрочно"
+                text += f"• `{p['code']}` — {p['amount']} KLC (исп. {p['used_count']}/{p['max_uses']}, до {expires})\n"
+        
+        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return
+
+    if data == "admin_stats":
+        async with db.pool.acquire() as conn:
+            users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+            total_balance = await conn.fetchval("SELECT SUM(balance) FROM users")
+            total_promo_uses = await conn.fetchval("SELECT COUNT(*) FROM promo_uses")
+        
+        text = (
+            f"📊 **СТАТИСТИКА БД:**\n\n"
+            f"👥 Пользователей: {users_count}\n"
+            f"💰 Общий баланс: {total_balance or 0} KLC\n"
+            f"🎫 Активаций промокодов: {total_promo_uses}"
+        )
+        
+        kb = [[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return
+
+    if data == "admin_create_promo":
+        await q.message.delete()
+        await create_promo_start(update, context)
+        return
+
+    if data == "admin_back":
+        kb = [
+            [InlineKeyboardButton("👥 Пользователи (20)", callback_data="admin_users")],
+            [InlineKeyboardButton("💰 Топ баланса", callback_data="admin_top")],
+            [InlineKeyboardButton("🎫 Промокоды", callback_data="admin_promos")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("➕ Создать промокод", callback_data="admin_create_promo")],
+        ]
+        
+        await q.message.edit_text(
+            "🔧 **АДМИН-ПАНЕЛЬ**\n\nВыберите действие:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+        return
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🤖 Kryloxa Bot v{VERSION} запущен!\n✅ PostgreSQL подключён")
+    await update.message.reply_text(f"🤖 Kryloxa Bot v{VERSION} запущен!\n✅ PostgreSQL подключён\n✅ Все функции активны")
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        f"📜 СПИСОК КОМАНД ({VERSION})\n\n"
-        "🕹 Меню: /start, /help, /magaz\n"
-        "👁 Глаз: статус — без входа; статус+ — WebSocket debug\n"
-        "💰 Экономика: баланс, б, обо мне\n"
-        "⚒ Фарм: работа — только в ЛС бота\n"
-        "🎫 Промо: промо [код]\n"
-        "🛡 Модер: инфа, молчи, скажи, бан, варн\n"
-        "🎲 Игра: рулетка — ответом на пользователя"
+        f"📜 **СПИСОК КОМАНД** ({VERSION})\n\n"
+        "**Основные:**\n"
+        "/start, /help, /magaz - меню\n"
+        "статус / статус+ - проверка Gartic Phone\n\n"
+        "**Экономика:**\n"
+        "баланс / б - баланс\n"
+        "обо мне - профиль\n"
+        "инфа (ответом) - профиль другого\n"
+        "работа - фарм (ЛС бота)\n"
+        "промо [код] - активация\n\n"
+        "**Игры:**\n"
+        "рулетка (ответом) - дуэль\n"
+        "тп - топ дня по сообщениям\n\n"
+        "**Модер (ранг 1+):**\n"
+        "бан/молчи/варн (ответом) - наказания\n"
+        "скажи (ответом) - размут\n\n"
+        "**Владелец:**\n"
+        "/createpm - создать промокод\n"
+        "админпанель - панель управления"
     )
-
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def magaz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -980,8 +1349,9 @@ async def magaz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "🛒 Kryloxa Shop",
-        reply_markup=InlineKeyboardMarkup(kb)
+                "🛒 **Kryloxa Shop**\n\nПокупки:",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
     )
 
 
@@ -1009,6 +1379,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("magaz", magaz))
+    app.add_handler(CommandHandler("createpm", create_promo_start))
 
     app.add_handler(CallbackQueryHandler(on_call))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
