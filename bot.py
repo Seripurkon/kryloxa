@@ -53,16 +53,11 @@ duel_sessions = {}
 work_timers = {}
 
 
-def get_rank_str(uid):
+async def get_rank_str(uid):
     """Получение ранга из БД"""
     if uid == OWNER_ID:
         return "4 (Owner)"
-    
-    # Для тестового режима -1
-    import asyncio
-    loop = asyncio.new_event_loop()
-    rank = loop.run_until_complete(db.get_rank(uid))
-    loop.close()
+    rank = await db.get_rank(uid)
     return "-1 Tester" if rank == -1 else str(rank)
 
 
@@ -595,15 +590,13 @@ async def handle_duel(query, context, gid, striker_id):
 
         try:
             if game["bet"] == "warn":
-                # Получаем текущие варны и увеличиваем
-                current_warns = await db.get_warns(loser_id)
-                new_warns = current_warns + 1
-                # TODO: добавить метод update_warns в database.py
+                new_warns = await db.update_warns(loser_id, 1)
                 res += f"⚠️ {loser_n} получает ВАРН! ({new_warns}/3)"
 
                 if new_warns >= 3:
                     await context.bot.ban_chat_member(chat_id, loser_id)
                     res += f"\n⛔ {loser_n} забанен (3/3 варнов)!"
+                    await db.reset_warns(loser_id)
 
             elif game["bet"] == "ban":
                 await context.bot.ban_chat_member(
@@ -623,9 +616,6 @@ async def handle_duel(query, context, gid, striker_id):
                 res += f"😶 {loser_n} в муте на 1 день!"
 
             else:
-                loser_balance = await db.get_balance(loser_id)
-                winner_balance = await db.get_balance(winner_id)
-                
                 await db.update_balance(loser_id, -100)
                 await db.update_balance(winner_id, 100)
                 res += f"💰 {loser_n} теряет 100 KLC!"
@@ -739,9 +729,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = text.split(" ", 1)[1].strip()
         
         if await db.use_promo(code, user.id):
-            # Получаем сумму промокода из БД
-            # TODO: добавить метод get_promo_amount
-            await update.message.reply_text(f"✅ Промокод `{code}` активирован! +100 KLC.", parse_mode="Markdown")
+            promo_amount = await db.get_promo_amount(code)
+            await update.message.reply_text(f"✅ Промокод `{code}` активирован! +{promo_amount} KLC.", parse_mode="Markdown")
         else:
             await update.message.reply_text("❌ Такого промокода нет или он уже использован.")
         return
@@ -857,11 +846,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.startswith("варн"):
             _, _, reason = parse_admin_request(raw)
 
-            current_warns = await db.get_warns(target_id)
-            new_warns = current_warns + 1
-            # TODO: добавить метод update_warns в database.py
-            # Пока оставляем в памяти
-            # warns[target_id] = new_warns
+            new_warns = await db.update_warns(target_id, 1)
 
             if new_warns >= 3:
                 await context.bot.ban_chat_member(cid, target_id)
@@ -869,6 +854,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"⛔️ {target_name} забанен (3/3 варнов).\n"
                     f"Причина: {reason}"
                 )
+                await db.reset_warns(target_id)
             else:
                 await update.message.reply_text(
                     f"⚠️ Варн {target_name} ({new_warns}/3).\n"
@@ -960,8 +946,8 @@ async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data == "shop_unwarn":
             if await db.get_balance(uid) >= 500:
                 await db.update_balance(uid, -500)
-                # TODO: уменьшить варны в БД
-                await q.answer("✅ Варн снят!", show_alert=True)
+                new_warns = await db.update_warns(uid, -1)
+                await q.answer(f"✅ Варн снят! Теперь варнов: {new_warns}", show_alert=True)
             else:
                 await q.answer("❌ Недостаточно KLC.", show_alert=True)
 
