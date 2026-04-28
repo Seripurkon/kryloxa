@@ -499,6 +499,42 @@ async def magaz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛒 Магазин", reply_markup=InlineKeyboardMarkup(kb))
 
 
+# ====================== CALLBACK HANDLER ======================
+async def on_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline-кнопок"""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    data = query.data
+
+    if data.startswith("shop_"):
+        uid = query.from_user.id
+        if data == "shop_unmute":
+            if await db.get_balance(uid) >= 1000:
+                await db.update_balance(uid, -1000)
+                await context.bot.restrict_chat_member(
+                    query.message.chat_id, uid,
+                    ChatPermissions(
+                        can_send_messages=True,
+                        can_send_photos=True,
+                        can_send_videos=True,
+                        can_send_other_messages=True
+                    )
+                )
+                await query.answer("✅ Мут снят!", show_alert=True)
+            else:
+                await query.answer("❌ Недостаточно KLC", show_alert=True)
+
+        elif data == "shop_unwarn":
+            if await db.get_balance(uid) >= 500:
+                await db.update_balance(uid, -500)
+                await query.answer("✅ Варн снят!", show_alert=True)
+            else:
+                await query.answer("❌ Недостаточно KLC", show_alert=True)
+
+
 # ====================== ЗАПУСК ======================
 if __name__ == "__main__":
     print("=" * 55)
@@ -508,7 +544,12 @@ if __name__ == "__main__":
     async def main():
         await db.connect()
 
-        request_config = HTTPXRequest(connect_timeout=30, read_timeout=30)
+        request_config = HTTPXRequest(
+            connect_timeout=30,
+            read_timeout=30,
+            write_timeout=30,
+            pool_timeout=30
+        )
 
         app = ApplicationBuilder().token(TOKEN).request(request_config).build()
 
