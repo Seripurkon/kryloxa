@@ -1,6 +1,7 @@
 # database.py
 import logging
 from typing import Optional, Dict
+from datetime import datetime, timedelta
 
 import asyncpg
 
@@ -190,10 +191,14 @@ class Database:
 
             # Получаем информацию о промокоде
             promo = await conn.fetchrow(
-                "SELECT amount, max_uses, used_count FROM promos WHERE code = $1",
+                "SELECT amount, max_uses, used_count, expires_at FROM promos WHERE code = $1",
                 code
             )
             if not promo:
+                return False
+
+            # Проверяем срок действия
+            if promo['expires_at'] and promo['expires_at'] < datetime.now():
                 return False
 
             # Проверяем лимит использований
@@ -224,21 +229,32 @@ class Database:
             )
             return amount or 0
 
-    async def create_promo(self, code: str, amount: int, max_uses: int = 1) -> bool:
-        """Создать новый промокод"""
+    async def create_promo(self, code: str, amount: int, days: int = 30) -> bool:
+        """Создать новый промокод с сроком действия в днях"""
         code = code.upper()
+        expires_at = datetime.now() + timedelta(days=days)
+        
         async with self.pool.acquire() as conn:
             try:
                 await conn.execute(
                     """
-                    INSERT INTO promos (code, amount, max_uses, used_count)
-                    VALUES ($1, $2, $3, 0)
+                    INSERT INTO promos (code, amount, max_uses, used_count, expires_at)
+                    VALUES ($1, $2, 999, 0, $3)
                     """,
-                    code, amount, max_uses
+                    code, amount, expires_at
                 )
                 return True
             except Exception:
                 return False
+
+    async def delete_expired_promos(self) -> int:
+        """Удалить просроченные промокоды"""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM promos WHERE expires_at < NOW()"
+            )
+            # Возвращаем количество удалённых
+            return int(result.split()[1]) if result else 0
 
     # ==================== ADMIN ====================
     async def get_all_users(self, limit: int = 100) -> list:
